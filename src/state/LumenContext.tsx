@@ -9,9 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import { ApiError, LumenClient, type ModelOption } from '@/lib/api'
+import { bookContext, type ReadingProgress } from '../../client/features.js'
 import {
   DEFAULT_SETTINGS,
   KEYS,
+  getBook,
   loadConversations,
   loadModel,
   loadSettings,
@@ -19,6 +21,7 @@ import {
   loadUsage,
   newId,
   recordUsage,
+  restoreConversations,
   saveConversations,
   saveModel,
   saveSettings,
@@ -26,6 +29,7 @@ import {
   type Message,
   type Settings,
   type UsageState,
+  type UsageReport,
 } from '@/lib/store'
 
 type Status = 'checking' | 'authenticated' | 'unauthenticated'
@@ -39,6 +43,7 @@ interface LumenContextValue {
   status: Status
   settings: Settings
   updateSettings: (patch: Partial<Settings>) => void
+  connectProvider: (apiBaseUrl: string, apiKey: string) => Promise<void>
   resetSettings: () => void
 
   models: ModelOption[]
@@ -60,6 +65,7 @@ interface LumenContextValue {
 
   streaming: boolean
   streamingId: string | null
+  readingProgress: ReadingProgress | null
   error: string | null
   clearError: () => void
   send: (text: string) => Promise<void>
@@ -74,6 +80,13 @@ interface LumenContextValue {
 }
 
 const LumenContext = createContext<LumenContextValue | null>(null)
+
+function providerHeaders(settings: Pick<Settings, 'apiBaseUrl' | 'apiKey'>): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (settings.apiKey?.trim()) headers['X-Api-Key'] = settings.apiKey.trim()
+  if (settings.apiBaseUrl?.trim()) headers['X-Api-Base'] = settings.apiBaseUrl.trim()
+  return headers
+}
 
 export function useLumen(): LumenContextValue {
   const value = useContext(LumenContext)
@@ -110,12 +123,15 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('checking')
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations)
+  const [historyReady, setHistoryReady] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [models, setModels] = useState<ModelOption[]>([])
   const [modelStatus, setModelStatus] = useState<ModelStatus>({ state: 'loading' })
   const [modelRefresh, setModelRefresh] = useState(0)
   const [model, setModelState] = useState<string>(() => loadModel() || DEFAULT_SETTINGS.defaultModel)
   const [streaming, setStreaming] = useState(false)
+  const [streamingId, setStreamingId] = useState<string | null>(null)
+  const [readingProgress, setReadingProgress] = useState<ReadingProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [usage, setUsage] = useState<UsageState>(loadUsage)
   const [syncCode, setSyncCodeState] = useState<string>(loadSyncCode)
@@ -132,23 +148,21 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const modelRef = useRef(model)
   modelRef.current = model
   const abortRef = useRef<AbortController | null>(null)
-  const streamingRef = useRef(false)
-  streamingRef.current = streaming
-
   const client = useMemo(
-    () =>
-      new LumenClient('', {
-        headers: (): Record<string, string> => {
-          const key = settingsRef.current.apiKey.trim()
-          const headers: Record<string, string> = {}
-          if (key) headers['X-Api-Key'] = key
-          return headers
-        },
-      }),
+    () => new LumenClient('', { headers: () => providerHeaders(settingsRef.current) }),
     [],
   )
 
   /* ------------------------------------------------------------ bootstrap */
+
+  useEffect(() => {
+    let cancelled = false
+    restoreConversations()
+      .then(history => { if (!cancelled) setConversations(history) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setHistoryReady(true) })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -200,12 +214,28 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   }, [settings])
 
   useEffect(() => {
-    saveConversations(conversations)
-  }, [conversations])
+    if (!historyReady || !streaming) return
+    const timer = window.setInterval(() => { void saveConversations(conversationsRef.current) }, 1_000)
+    return () => window.clearInterval(timer)
+  }, [historyReady, streaming])
+
+  useEffect(() => {
+    if (historyReady && !streaming) void saveConversations(conversations)
+  }, [conversations, historyReady, streaming])
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings(current => ({ ...current, ...patch }))
   }, [])
+
+  const connectProvider = useCallback(async (apiBaseUrl: string, apiKey: string) => {
+    const config = { apiBaseUrl, apiKey }
+    const probe = new LumenClient('', { headers: () => providerHeaders(config) })
+    const list = await probe.models(AbortSignal.timeout?.(12_000))
+    if (!list.length) throw new Error('接口没有返回可选模型。')
+    setModels(list)
+    setModelStatus({ state: 'ready' })
+    updateSettings(config)
+  }, [updateSettings])
 
   const resetSettings = useCallback(() => {
     setSettings(current => ({
@@ -261,9 +291,10 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const deleteConversation = useCallback((id: string) => {
+    if (streamingId === id) abortRef.current?.abort()
     setConversations(current => current.filter(item => item.id !== id))
     if (activeIdRef.current === id) setActiveId(null)
-  }, [])
+  }, [streamingId])
 
   const toggleStar = useCallback((id: string) => {
     setConversations(current =>
@@ -272,6 +303,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const clearAll = useCallback(() => {
+    abortRef.current?.abort()
     setConversations([])
     setActiveId(null)
   }, [])
@@ -299,13 +331,19 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   )
 
   const run = useCallback(
-    async (conversationId: string, question: string) => {
-      const conversation = conversationsRef.current.find(item => item.id === conversationId)
-      if (!conversation) return
+    async (conversation: Conversation, question: string, replaceId?: string) => {
+      if (abortRef.current) return
 
+      const conversationId = conversation.id
+      const selectedModel = models.find(option => option.id === conversation.model)
+        ?? models.find(option => option.id === modelRef.current) ?? models[0]
+      const selectedId = selectedModel?.id ?? conversation.model
+      const config = providerHeaders(settingsRef.current)
+      const requestClient = new LumenClient('', { headers: () => config })
       const controller = new AbortController()
       abortRef.current = controller
       setStreaming(true)
+      setStreamingId(conversationId)
       setError(null)
 
       const answerId = newId()
@@ -318,51 +356,84 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       setConversations(current =>
         current.map(item =>
           item.id === conversationId
-            ? { ...item, messages: [...item.messages, answer], updatedAt: Date.now() }
+            ? {
+                ...item,
+                model: selectedId,
+                messages: [...item.messages.filter(message => message.id !== replaceId), answer],
+                updatedAt: Date.now(),
+              }
             : item,
         ),
       )
 
-      // A mutable box rather than a `let`: assignments inside the stream
-      // callback are invisible to TypeScript's control-flow narrowing, which
-      // would collapse the variable to `null` at every later read.
-      const reported: { current: { input?: number; output?: number; total?: number } | null } = {
-        current: null,
+      const chat = async (body: Record<string, unknown>, signal: AbortSignal, streamAnswer: boolean) => {
+        let report: UsageReport | null = null
+        let output = ''
+        let reasoning = ''
+        let frame: number | undefined
+        function flush() {
+          if (frame !== undefined) cancelAnimationFrame(frame)
+          frame = undefined
+          if (output) appendToAnswer(conversationId, answerId, 'content', output)
+          if (reasoning) appendToAnswer(conversationId, answerId, 'reasoning', reasoning)
+          output = ''
+          reasoning = ''
+        }
+
+        try {
+          await requestClient.chat({ ...body, model: selectedId }, event => {
+            if (event.type === 'usage') {
+              const input = event.input ?? 0
+              const outputTokens = event.output ?? 0
+              report = { input, output: outputTokens, total: event.total ?? input + outputTokens }
+            } else if (event.type === 'text') {
+              output += event.text
+              if (streamAnswer) {
+                setReadingProgress(null)
+                frame ??= requestAnimationFrame(flush)
+              }
+            } else if (streamAnswer && event.type === 'reasoning') {
+              reasoning += event.text
+              frame ??= requestAnimationFrame(flush)
+            }
+          }, signal)
+          return output
+        } finally {
+          if (streamAnswer) flush()
+          setUsage(recordUsage(report))
+        }
       }
 
       try {
-        await client.chat(
-          {
-            model: conversation.model,
-            messages: conversation.messages
-              .filter(item => item.content.trim())
-              .map(item => ({ role: item.role, content: item.content })),
-            book: conversation.book,
+        const messages = conversation.messages
+          .filter(item => item.id !== replaceId && !item.incomplete && item.content.trim())
+          .map(item => ({ role: item.role, content: item.content, reasoning_content: item.reasoning }))
+        let system: string | undefined
+        let maxOutput: number | undefined
+        if (conversation.book) {
+          const book = await getBook(conversation.book)
+          if (!book) throw new Error('本设备没有这本书的正文，请重新上传 EPUB。')
+          const context = selectedModel?.contextTokens
+          maxOutput = Math.min(8_192, Math.floor((context ?? 16_384) / 4))
+          const selection = await bookContext({
+            meta: book.meta,
+            chapters: book.chapters,
+            focus: conversation.book.focusChapter,
             question,
-          },
-          event => {
-            if (event.type === 'usage') {
-              reported.current = { input: event.input, output: event.output, total: event.total }
-            } else if (event.type === 'text') {
-              appendToAnswer(conversationId, answerId, 'content', event.text)
-            } else if (event.type === 'reasoning') {
-              appendToAnswer(conversationId, answerId, 'reasoning', event.text)
-            }
-          },
-          controller.signal,
-        )
-        const usage = reported.current
-        setUsage(
-          recordUsage(
-            usage
-              ? {
-                  input: usage.input ?? 0,
-                  output: usage.output ?? 0,
-                  total: usage.total ?? (usage.input ?? 0) + (usage.output ?? 0),
-                }
-              : null,
-          ),
-        )
+            history: messages.map(item => item.content + (item.reasoning_content ?? '')).join('\n'),
+            knownContext: context,
+            maxOutput,
+            progress: setReadingProgress,
+            signal: controller.signal,
+            callModel: (prompt, options, signal) => chat({
+              system: options.system,
+              messages: [{ role: 'user', content: prompt }],
+              max_tokens: options.maxTokens,
+            }, signal, false),
+          })
+          system = selection.system
+        }
+        await chat({ messages, system, max_tokens: maxOutput }, controller.signal, true)
       } catch (failure) {
         if (!controller.signal.aborted) {
           setError(
@@ -370,32 +441,27 @@ export function LumenProvider({ children }: { children: ReactNode }) {
               ? failure.message
               : '请求失败。',
           )
-          setConversations(current =>
-            current.map(item =>
-              item.id !== conversationId
-                ? item
-                : {
-                    ...item,
-                    messages: item.messages.filter(
-                      message => message.id !== answerId || message.content.trim(),
-                    ),
-                  },
-            ),
-          )
         }
-        // A cancelled answer keeps the text that already streamed in.
+        setConversations(current => current.map(item => item.id !== conversationId ? item : {
+          ...item,
+          messages: item.messages
+            .filter(message => message.id !== answerId || message.content.trim())
+            .map(message => message.id === answerId ? { ...message, incomplete: true } : message),
+        }))
       } finally {
         abortRef.current = null
+        setReadingProgress(null)
+        setStreamingId(null)
         setStreaming(false)
       }
     },
-    [appendToAnswer, client],
+    [appendToAnswer, models],
   )
 
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
-      if (!trimmed || streamingRef.current) return
+      if (!trimmed || abortRef.current) return
 
       const userMessage: Message = {
         id: newId(),
@@ -430,7 +496,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       setConversations(conversationsRef.current)
       setActiveId(conversation.id)
 
-      await run(conversation.id, trimmed)
+      await run(conversation, trimmed)
     },
     [run],
   )
@@ -444,7 +510,8 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     if (!conversation) return
     const lastUser = [...conversation.messages].reverse().find(item => item.role === 'user')
     if (!lastUser) return
-    await run(conversation.id, lastUser.content)
+    const last = conversation.messages.at(-1)
+    await run(conversation, lastUser.content, last?.incomplete ? last.id : undefined)
   }, [run])
 
   /* ----------------------------------------------------------------- auth */
@@ -469,9 +536,10 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value: LumenContextValue = {
-    status,
+    status: historyReady ? status : 'checking',
     settings,
     updateSettings,
+    connectProvider,
     resetSettings,
     models,
     modelStatus,
@@ -489,7 +557,8 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     toggleStar,
     clearAll,
     streaming,
-    streamingId: streaming ? activeId : null,
+    streamingId,
+    readingProgress,
     error,
     clearError: useCallback(() => setError(null), []),
     send,

@@ -104,38 +104,49 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
 export function ScopeSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { active, updateConversation } = useLumen()
   const [query, setQuery] = useState('')
-  const [chapterCount, setChapterCount] = useState<number | null>(null)
+  const [stored, setStored] = useState<Awaited<ReturnType<typeof getBook>>>(null)
+  const [loading, setLoading] = useState(false)
 
   const book = active?.book
-  const bookId = book?.id
 
   useEffect(() => {
-    if (!bookId || !open) return
+    if (!book || !open) return
     let cancelled = false
-    // Chapter titles are stored with the converted text in IndexedDB. Reading
-    // only the count keeps this cheap; the picker works off chapter indices
-    // and the book's own chapter total.
-    getBook(bookId)
-      .then(stored => {
-        if (!cancelled) setChapterCount(stored?.chapters.length ?? 0)
-      })
-      .catch(() => {
-        if (!cancelled) setChapterCount(0)
-      })
+    setQuery('')
+    setStored(null)
+    setLoading(true)
+    getBook(book)
+      .then(result => { if (!cancelled) setStored(result) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false) })
     return () => {
       cancelled = true
     }
-  }, [bookId, open])
+  }, [book, open])
 
-  const indices = useMemo(() => {
-    const total = chapterCount ?? 0
-    const needle = query.trim()
-    return Array.from({ length: total }, (_, index) => index).filter(index =>
-      needle ? `第 ${index + 1} 章`.includes(needle) : true,
-    )
-  }, [chapterCount, query])
+  const chapters = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return (stored?.chapters ?? []).map((chapter, index) => ({
+      index, label: `第 ${index + 1} 章`, chapter,
+    })).filter(item => `${item.label} ${item.chapter.title}`.toLowerCase().includes(needle))
+  }, [stored, query])
 
   if (!book || !active) return null
+
+  function download() {
+    if (!stored) return
+    const source = [
+      `# ${stored.meta.title}`,
+      stored.meta.author,
+      ...stored.chapters.map((chapter, index) => `## 第 ${index + 1} 章 · ${chapter.title}\n\n${chapter.text}`),
+    ].filter(Boolean).join('\n\n')
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/markdown;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${stored.meta.title.replace(/[/\\]/g, '_')}.md`
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+  }
 
   return (
     <Sheet open={open} title="阅读范围" onClose={onClose}>
@@ -143,40 +154,41 @@ export function ScopeSheet({ open, onClose }: { open: boolean; onClose: () => vo
         <div className="px-4 pb-2">
           <p className="truncate text-[15px] font-medium">{book.title}</p>
           <p className="mt-0.5 text-[13px] text-quiet">
-            {book.chapterCount} 章
+            {stored?.chapters.length ?? book.chapterCount} 章
             {book.unreadable ? ` · ${book.unreadable} 节未提取正文` : ''}
           </p>
         </div>
 
-        {(chapterCount ?? 0) > 8 ? (
+        {(stored?.chapters.length ?? 0) > 8 ? (
           <label className="mx-4 mb-3 flex h-9 items-center gap-2 rounded-[10px] bg-field px-2.5">
             <Icon name="search" size={16} className="text-quiet" />
             <input
               type="search"
               value={query}
               onChange={event => setQuery(event.target.value)}
-              placeholder="搜索章号"
-              aria-label="搜索章号"
+              placeholder="搜索章节或章号"
+              aria-label="搜索章节或章号"
               className="w-full bg-transparent text-[15px] outline-none placeholder:text-quiet"
             />
           </label>
         ) : null}
 
-        <div className="scroll-pane max-h-[52dvh] overflow-hidden overflow-y-auto bg-surface hairline-t hairline-b">
+        {stored ? <div className="scroll-pane max-h-[52dvh] overflow-hidden overflow-y-auto bg-surface hairline-t hairline-b">
           <Row
             icon="book"
             label="整本分析"
-            value={`${book.chapterCount} 章`}
+            value={`${stored.chapters.length} 章`}
             selected={book.focusChapter == null}
             onClick={() => {
               updateConversation(active.id, { book: { ...book, focusChapter: null } })
               onClose()
             }}
           />
-          {indices.map(index => (
+          {chapters.map(({ index, label, chapter }) => (
             <Row
               key={index}
-              label={`第 ${index + 1} 章`}
+              label={label}
+              detail={chapter.title}
               selected={book.focusChapter === index}
               onClick={() => {
                 updateConversation(active.id, { book: { ...book, focusChapter: index } })
@@ -184,7 +196,19 @@ export function ScopeSheet({ open, onClose }: { open: boolean; onClose: () => vo
               }}
             />
           ))}
-        </div>
+        </div> : (
+          <p role="status" className="px-4 py-3 text-[13px] text-quiet">
+            {loading ? '正在读取章节…' : '本设备没有这本书的正文，请重新上传 EPUB。'}
+          </p>
+        )}
+
+        {stored ? <button
+          type="button"
+          onClick={download}
+          className="mx-4 mt-4 w-[calc(100%-2rem)] rounded-[14px] bg-surface py-3.5 text-center text-[15px] text-brand"
+        >
+          下载 Markdown
+        </button> : null}
 
         <button
           type="button"

@@ -338,6 +338,8 @@ async function handleChat(request, env) {
     let receivedText = 0;
     let buffer = "";
     let failure = "";
+    let completed = false;
+    let truncated = false;
     let eventCount = 0;
     const recentSamples = [];
     try {
@@ -360,7 +362,11 @@ async function handleChat(request, env) {
           const trimmed = line.trim();
           if (!trimmed.startsWith("data:")) continue;
           const data = trimmed.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
+          if (!data) continue;
+          if (data === "[DONE]") {
+            if (!usesAnthropicEndpoint && !usesResponses) completed = true;
+            continue;
+          }
           let parsed;
           try {
             parsed = JSON.parse(data);
@@ -373,6 +379,16 @@ async function handleChat(request, env) {
           if (recentSamples.length > 3) recentSamples.shift();
           const errorMessage = upstreamErrorMessage(parsed);
           if (errorMessage) throw new Error(errorMessage);
+          if (usesResponses) {
+            completed ||= parsed.type === "response.completed";
+          } else if (usesAnthropicEndpoint) {
+            completed ||= parsed.type === "message_stop";
+            truncated ||= parsed.type === "message_delta" && parsed.delta?.stop_reason === "max_tokens";
+          } else {
+            const reason = parsed.choices?.[0]?.finish_reason;
+            completed ||= typeof reason === "string" && reason.length > 0;
+            truncated ||= reason === "length";
+          }
           const text = deltaText(parsed);
           if (text) {
             received += text.length;
@@ -392,6 +408,8 @@ async function handleChat(request, env) {
       void reader.cancel().catch(() => void 0);
       upstreamController.abort();
     }
+    if (!failure && truncated) failure = "回答达到模型输出上限，当前内容未完整生成。";
+    if (!failure && receivedText && !completed) failure = "上游连接中断，回答未完整返回。请重试。";
     if (!receivedText && !failure) {
       failure = "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u4EFB\u4F55\u5185\u5BB9\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002";
       console.error("[chat] empty reply", { model, endpoint: endpointPath, eventCount, recentSamples });

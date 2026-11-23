@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { highlight, isLanguageSupported } from '@/lib/highlighter'
 
@@ -11,30 +11,34 @@ import { highlight, isLanguageSupported } from '@/lib/highlighter'
  * the block renders as plain monospace, which keeps the text selectable and
  * correct rather than showing a spinner in the middle of an answer.
  */
-export function CodeBlock({ code, language }: { code: string; language: string }) {
-  const [html, setHtml] = useState<string | null>(null)
+export const CodeBlock = memo(function CodeBlock({ code, language, streaming = false }: { code: string; language: string; streaming?: boolean }) {
+  const [highlighted, setHighlighted] = useState<{ code: string; language: string; html: string } | null>(null)
   const [copied, setCopied] = useState(false)
-  const mounted = useRef(true)
+  const copyTimeout = useRef<number | undefined>(undefined)
 
   useEffect(() => {
-    mounted.current = true
-    setHtml(null)
-    if (!language || !isLanguageSupported(language)) return
+    if (streaming || !language || !isLanguageSupported(language)) return
+    let cancelled = false
 
     void highlight(code, language).then(result => {
-      if (mounted.current) setHtml(result)
+      if (!cancelled && result) setHighlighted({ code, language, html: result })
     })
 
     return () => {
-      mounted.current = false
+      cancelled = true
     }
-  }, [code, language])
+  }, [code, language, streaming])
+
+  useEffect(() => () => window.clearTimeout(copyTimeout.current), [])
+
+  const html = highlighted?.code === code && highlighted.language === language ? highlighted.html : null
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(code)
       setCopied(true)
-      window.setTimeout(() => setCopied(false), 1400)
+      window.clearTimeout(copyTimeout.current)
+      copyTimeout.current = window.setTimeout(() => setCopied(false), 1400)
     } catch {
       // Clipboard permission can be denied; silence is better than an alert.
     }
@@ -62,4 +66,4 @@ export function CodeBlock({ code, language }: { code: string; language: string }
       )}
     </div>
   )
-}
+})

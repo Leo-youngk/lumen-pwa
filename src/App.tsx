@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { ChatScreen } from '@/screens/ChatScreen'
 import { HistoryScreen } from '@/screens/HistoryScreen'
 import { HomeScreen } from '@/screens/HomeScreen'
@@ -8,7 +8,7 @@ import { SignInScreen } from '@/screens/SignInScreen'
 import { Sheet } from '@/components/Sheet'
 import { List, Row } from '@/components/List'
 import { LumenClient } from '@/lib/api'
-import { newId, putBook } from '@/lib/store'
+import { newId, putBook, type BookRecord } from '@/lib/store'
 import { useLumen } from '@/state/LumenContext'
 import { useTheme, useViewport } from '@/lib/viewport'
 import { useServiceWorker } from '@/lib/useServiceWorker'
@@ -17,13 +17,14 @@ import { cn } from '@/lib/cn'
 type Route = 'home' | 'chat' | 'history' | 'settings'
 
 export function App() {
-  const { status, settings, activeId, startConversation, clearAll, deleteConversation } =
+  const { status, settings, activeId, streaming, openConversation, startConversation, clearAll, deleteConversation } =
     useLumen()
   const [route, setRoute] = useState<Route>('home')
   const [models, setModels] = useState(false)
   const [scope, setScope] = useState(false)
   const [options, setOptions] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const uploadInFlight = useRef(false)
   const [uploadError, setUploadError] = useState('')
 
   useViewport()
@@ -31,48 +32,37 @@ export function App() {
   useServiceWorker()
 
   const openChat = useCallback((id: string) => {
+    openConversation(id)
     setRoute('chat')
-    void id
-  }, [])
+  }, [openConversation])
 
   const upload = useCallback(async (file: File) => {
+    if (uploadInFlight.current || streaming) return
+    uploadInFlight.current = true
     setUploading(true)
     setUploadError('')
     try {
       const client = new LumenClient()
       const result = await client.uploadEpub(file)
-      const id = newId()
-      await putBook(
-        {
-          id,
-          title: result.title,
-          chapterCount: result.chapterCount,
-          charCount: result.markdown.length,
-          unreadable: result.unreadable,
-          markdown: result.markdown,
-          focusChapter: null,
-        },
-        result.markdown ? [result.markdown] : [],
-      )
-      startConversation({
-        title: result.title,
-        book: {
-          id,
-          title: result.title,
-          chapterCount: result.chapterCount,
-          charCount: result.markdown.length,
-          unreadable: result.unreadable,
-          markdown: result.markdown,
-          focusChapter: null,
-        },
-      })
+      const book: BookRecord = {
+        id: newId(),
+        title: result.title || file.name.replace(/\.epub$/i, ''),
+        author: result.author,
+        chapterCount: result.chapters.length,
+        charCount: result.charCount,
+        unreadable: result.unreadable,
+        focusChapter: null,
+      }
+      await putBook(book, result.chapters)
+      startConversation({ title: book.title, book })
       setRoute('chat')
     } catch (failure) {
       setUploadError(failure instanceof Error ? failure.message : 'EPUB 解析失败。')
     } finally {
+      uploadInFlight.current = false
       setUploading(false)
     }
-  }, [startConversation])
+  }, [startConversation, streaming])
 
   if (status === 'checking') {
     return (
@@ -123,6 +113,7 @@ export function App() {
               onOpenModels={() => setModels(true)}
               onOpenScope={() => setScope(true)}
               onUpload={file => void upload(file)}
+              uploading={uploading}
             />
           ) : null}
 

@@ -37,7 +37,7 @@ export function HomeScreen({
   onOpenScope,
   onSent,
 }: HomeScreenProps) {
-  const { send, model, modelLabel, active, models } = useLumen()
+  const { send, model, modelLabel, active, models, streaming } = useLumen()
   const [draft, setDraft] = useState('')
   const book = active?.book
   const upload = useRef<HTMLInputElement>(null)
@@ -72,7 +72,8 @@ export function HomeScreen({
                 void send(text)
                 onSent()
               }}
-              onAttach={() => upload.current?.click()}
+              onAttach={onUpload}
+              disabled={uploading || streaming}
               placeholder={book ? '向这本书提问' : '问点什么…'}
               docked={false}
               trailing={
@@ -88,6 +89,7 @@ export function HomeScreen({
                 <button
                   key={text}
                   type="button"
+                  disabled={uploading || streaming}
                   onClick={() => {
                     void send(text)
                     onSent()
@@ -109,6 +111,7 @@ export function HomeScreen({
             ) : (
               <button
                 type="button"
+                disabled={uploading || streaming}
                 onClick={() => upload.current?.click()}
                 className="mx-auto mt-6 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-quiet transition-opacity active:opacity-50"
               >

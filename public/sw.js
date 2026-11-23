@@ -13,7 +13,7 @@
  * The API is never cached: replies and model lists must be live.
  */
 
-const VERSION = 'lumen-shell-v58'
+const VERSION = 'lumen-shell-v59'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg']
 
 self.addEventListener('install', event => {
@@ -50,8 +50,10 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(request)
         .then(response => {
-          const copy = response.clone()
-          caches.open(VERSION).then(cache => cache.put('/index.html', copy))
+          if (response.ok) {
+            const copy = response.clone()
+            event.waitUntil(caches.open(VERSION).then(cache => cache.put('/index.html', copy)).catch(() => {}))
+          }
           return response
         })
         .catch(() => caches.match('/index.html').then(cached => cached ?? Response.error())),
@@ -65,8 +67,10 @@ self.addEventListener('fetch', event => {
         cached =>
           cached ??
           fetch(request).then(response => {
-            const copy = response.clone()
-            caches.open(VERSION).then(cache => cache.put(request, copy))
+            if (response.ok) {
+              const copy = response.clone()
+              event.waitUntil(caches.open(VERSION).then(cache => cache.put(request, copy)).catch(() => {}))
+            }
             return response
           }),
       ),
@@ -77,8 +81,10 @@ self.addEventListener('fetch', event => {
   event.respondWith(
     fetch(request)
       .then(response => {
-        const copy = response.clone()
-        caches.open(VERSION).then(cache => cache.put(request, copy))
+        if (response.ok) {
+          const copy = response.clone()
+          event.waitUntil(caches.open(VERSION).then(cache => cache.put(request, copy)).catch(() => {}))
+        }
         return response
       })
       .catch(() => caches.match(request).then(cached => cached ?? Response.error())),

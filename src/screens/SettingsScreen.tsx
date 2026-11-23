@@ -127,7 +127,7 @@ export function SettingsScreen({
               <Row label="输出" value={formatTokens(usage.output)} />
             </List>
 
-            <List header="高级" footer="自定义接口会替换默认服务，请求直接从浏览器发出。">
+            <List header="高级" footer="自定义接口通过 Lumen 的 Worker 连接模型服务。">
               <Row
                 icon="provider"
                 label="自定义接口与 API Key"
@@ -160,7 +160,10 @@ export function SettingsScreen({
         </div>
       </Sheet>
 
-      <AdvancedSheet open={advanced} onClose={() => setAdvanced(false)} />
+      <AdvancedSheet open={advanced} onClose={() => setAdvanced(false)} onConnected={() => {
+        setAdvanced(false)
+        onOpenModels()
+      }} />
     </div>
   )
 }
@@ -249,22 +252,31 @@ function SliderRow({
   )
 }
 
-function AdvancedSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { settings, updateSettings } = useLumen()
+function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose: () => void; onConnected: () => void }) {
+  const { settings, connectProvider } = useLumen()
   const [base, setBase] = useState(settings.apiBaseUrl)
   const [key, setKey] = useState(settings.apiKey)
   const [message, setMessage] = useState('')
+  const [connecting, setConnecting] = useState(false)
 
-  function save() {
+  async function save() {
+    if (connecting) return
     const apiBaseUrl = base.trim()
     const apiKey = key.trim()
     if (apiBaseUrl && (!/^https:\/\//i.test(apiBaseUrl) || !apiKey)) {
       setMessage('请填写以 https:// 开头的地址，以及该服务的 API Key。')
       return
     }
-    updateSettings({ apiBaseUrl, apiKey })
-    setMessage('已保存。')
-    window.setTimeout(onClose, 450)
+    setMessage('')
+    setConnecting(true)
+    try {
+      await connectProvider(apiBaseUrl, apiKey)
+      onConnected()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '无法连接模型服务。')
+    } finally {
+      setConnecting(false)
+    }
   }
 
   return (
@@ -298,12 +310,13 @@ function AdvancedSheet({ open, onClose }: { open: boolean; onClose: () => void }
         </p>
         <button
           type="button"
-          onClick={save}
+          onClick={() => void save()}
+          disabled={connecting}
           className="h-11 w-full rounded-[12px] bg-brand text-[16px] font-medium text-white active:opacity-80"
         >
-          保存
+          {connecting ? '正在获取模型…' : '连接并选择模型'}
         </button>
-        {message ? <p className="text-center text-[13px] text-quiet">{message}</p> : null}
+        {message ? <p role="alert" className="text-center text-[13px] text-quiet">{message}</p> : null}
       </div>
     </Sheet>
   )

@@ -1,106 +1,151 @@
-import { memo, useMemo, type ReactNode } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import { memo, useDeferredValue, useMemo, useRef, useState, type ReactNode } from 'react'
+import { fromMarkdown } from 'mdast-util-from-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import remarkCjkFriendly from 'remark-cjk-friendly'
-import rehypeKatex from 'rehype-katex'
-import { cn } from '@/lib/cn'
+import { Streamdown, useIsCodeFenceIncomplete, type StreamdownProps } from 'streamdown'
 import { CodeBlock } from './CodeBlock'
+import { MathBlock } from './Math'
 import { MathErrorBoundary } from './MathErrorBoundary'
 
-/**
- * Assistant answer renderer.
- *
- * Built on react-markdown rather than a hand-rolled parser. The hand-rolled one
- * handled paragraphs and bullets, but tables came out as preformatted text, and
- * there was no syntax highlighting or footnote support.
- *
- * Plugin order follows what LobeHub ships in production, and both comments are
- * bugs they hit:
- *
- * 1. `remark-cjk-friendly` first — CommonMark's emphasis rules treat CJK
- *    punctuation as whitespace, so `**中文**，` fails to bold and trailing
- *    full-width brackets get swallowed into autolinks.
- * 2. `remark-math` before `remark-gfm` — otherwise a `|` inside `$…$` is read
- *    as a table column separator.
- * 3. `rehype-katex` after the tree is settled.
- */
+const remarkPlugins = [remarkCjkFriendly, remarkMath, [remarkGfm, { singleTilde: false }]] satisfies StreamdownProps['remarkPlugins']
+const rehypePlugins: NonNullable<StreamdownProps['rehypePlugins']> = []
 
-const remarkPlugins = [remarkCjkFriendly, remarkMath, [remarkGfm, { singleTilde: false }] as const]
-const rehypePlugins = [
-  [rehypeKatex, { throwOnError: false, strict: false, output: 'html' }] as const,
-]
-
-/** react-markdown wraps a fenced block in <pre><code>; CodeBlock owns both. */
-function pre({ children }: { children?: ReactNode }) {
+function MarkdownPre({ children }: { children?: ReactNode }) {
   return <>{children}</>
 }
 
-function code({ className, children }: { className?: string; children?: ReactNode }) {
+function MarkdownCode({ className, children }: React.ComponentProps<'code'>) {
+  const incomplete = useIsCodeFenceIncomplete()
   const text = String(children ?? '').replace(/\n$/, '')
-  const match = /language-([\w+-]+)/.exec(className ?? '')
-
-  if (match) return <CodeBlock code={text} language={match[1] ?? ''} />
-  // A fenced block with no language still arrives with a trailing newline.
-  if (String(children ?? '').includes('\n')) return <CodeBlock code={text} language="" />
-
+  const classes = className?.split(/\s+/) ?? []
+  if (classes.includes('math-display') || classes.includes('math-inline')) {
+    return <MathBlock tex={text} display={classes.includes('math-display')} />
+  }
+  const language = /language-([\w+-]+)/.exec(className ?? '')?.[1]
+  if (language || String(children ?? '').includes('\n')) {
+    return <CodeBlock code={text} language={language ?? ''} streaming={incomplete} />
+  }
   return <code className="lumen-inline-code">{children}</code>
 }
 
-/** Wrapper enables horizontal scroll for wide tables. */
-function table({ children }: { children?: ReactNode }) {
+function MarkdownTable({ children }: { children?: ReactNode }) {
+  const tableRef = useRef<HTMLTableElement>(null)
+  const [copyState, setCopyState] = useState('')
+  async function copy() {
+    const rows = Array.from(tableRef.current?.rows ?? [])
+    const tsv = rows.map(row => Array.from(row.cells, cell => cell.innerText.trim().replace(/[\t\n]+/g, ' ')).join('\t')).join('\n')
+    try {
+      await navigator.clipboard.writeText(tsv)
+      setCopyState('已复制')
+    } catch {
+      setCopyState('复制失败')
+    }
+  }
+
   return (
     <div className="lumen-table-wrap">
-      <table>{children}</table>
+      <div className="lumen-table__bar">
+        <button type="button" onClick={() => void copy()} aria-label="复制表格" className="lumen-code__copy">
+          {copyState || '复制表格'}
+        </button>
+      </div>
+      <div className="lumen-table__scroll"><table ref={tableRef}>{children}</table></div>
     </div>
   )
 }
 
-function link({ href, children }: { href?: string; children?: ReactNode }) {
+function MarkdownLink({ href, children, id, ...props }: React.ComponentProps<'a'>) {
+  const external = href && !href.startsWith('#')
   return (
-    <a href={href} target="_blank" rel="noreferrer noopener" className="lumen-link">
+    <a
+      href={href || undefined}
+      id={id}
+      aria-describedby={props['aria-describedby']}
+      data-footnote-ref={Reflect.get(props, 'data-footnote-ref')}
+      data-footnote-backref={Reflect.get(props, 'data-footnote-backref')}
+      target={external ? '_blank' : undefined}
+      rel={external ? 'noreferrer noopener' : undefined}
+      className="lumen-link"
+    >
       {children}
     </a>
   )
 }
 
-const components: Components = { pre, code, table, a: link }
+const components = {
+  pre: MarkdownPre,
+  code: MarkdownCode,
+  table: MarkdownTable,
+  a: MarkdownLink,
+  strong: 'strong',
+  h1: 'h1',
+  h2: 'h2',
+  h3: 'h3',
+  h4: 'h4',
+  ul: 'ul',
+  ol: 'ol',
+  li: 'li',
+  blockquote: 'blockquote',
+} as StreamdownProps['components']
+const urlTransform: NonNullable<StreamdownProps['urlTransform']> = (url, key) =>
+  (key === 'href' ? /^(https?:|mailto:|#)/i : /^https?:/i).test(url) ? url : ''
 
-/**
- * Normalise display math onto its own lines.
- *
- * micromark's math flow requires the `$$` fences to open and close on their own
- * lines. Models routinely emit `$$x = y$$` as a single line, which then parses
- * as inline math and renders at body size mid-paragraph. Splitting it here is
- * cheaper than a remark plugin and covers the case everywhere.
- */
-function normaliseDisplayMath(source: string): string {
-  return source.replace(/(^|\n)[ \t]*\$\$([^\n$]+?)\$\$[ \t]*(?=\n|$)/g, (_match, lead, body) => {
-    return `${lead}$$\n${body.trim()}\n$$`
+/** Apply only to Markdown text outside code and link destinations. */
+function prepareMath(source: string): string {
+  if (!/\$|\\[[(]/.test(source)) return source
+  const replacements = /(^|\n)([ \t]{0,3})\$\$([^\n$]+?)\$\$[ \t]*(?=\n|$)|\\\[([\s\S]+?)\\\]|\\\(([^\n]+?)\\\)|(?<![\\$\w])\$\d+(?:[,.]\d+)*(?=$|[，。；、,:!?）]|[ \t]+[a-z\u3400-\u9fff]|[\u3400-\u9fff])/gim
+  if (!replacements.test(source)) return source
+  replacements.lastIndex = 0
+
+  const protectedRanges: { start: number; end: number }[] = []
+  function collect(node: ReturnType<typeof fromMarkdown> | ReturnType<typeof fromMarkdown>['children'][number]) {
+    if (node.type === 'code' || node.type === 'inlineCode' || node.type === 'link' || node.type === 'image' || node.type === 'definition' || node.type === 'html') {
+      const start = node.position?.start.offset
+      const end = node.position?.end.offset
+      if (start !== undefined && end !== undefined) protectedRanges.push({ start, end })
+    } else if ('children' in node) {
+      for (const child of node.children) collect(child as Parameters<typeof collect>[0])
+    }
+  }
+  collect(fromMarkdown(source))
+
+  return source.replace(replacements, (match, lead, indent, display, bracket, inline, offset: number) => {
+    const start = offset + (lead?.length ?? 0)
+    if (protectedRanges.some(range => range.start < offset + match.length && range.end > start)) return match
+    if (display !== undefined) return `${lead}${indent}$$\n${indent}${display.trim()}\n${indent}$$`
+    if (bracket !== undefined) {
+      const line = source.lastIndexOf('\n', offset - 1) + 1
+      if (source.slice(line, offset).trim()) return `$${bracket.trim().replace(/\n/g, ' ')}$`
+      return `$$\n${bracket.trim()}\n$$`
+    }
+    if (inline !== undefined) return `$${inline.trim()}$`
+    return `\\${match}`
   })
 }
 
-export interface MarkdownProps {
-  source: string
-}
-
-export const Markdown = memo(function Markdown({ source }: MarkdownProps) {
-  const plugins = useMemo(() => ({ remark: remarkPlugins, rehype: rehypePlugins }), [])
-  const normalised = useMemo(() => normaliseDisplayMath(source), [source])
+export const Markdown = memo(function Markdown({ source, streaming }: { source: string; streaming: boolean }) {
+  const deferred = useDeferredValue(source)
+  const text = streaming ? deferred : source
+  const prepared = useMemo(() => prepareMath(text), [text])
+  // Definitions and references must be available to all paragraphs of the message.
+  const splitBlocks = !/^\s{0,3}\[[^\n\]]+\]:/m.test(prepared)
   return (
-    <div className={cn('lumen-prose', 'lumen-prose--chat')}>
-      <MathErrorBoundary>
-        <ReactMarkdown
-          remarkPlugins={plugins.remark as never}
-          rehypePlugins={plugins.rehype as never}
+    <div className="lumen-prose lumen-prose--chat">
+      <MathErrorBoundary fallback={source}>
+        <Streamdown
+          mode={streaming && splitBlocks ? 'streaming' : 'static'}
+          isAnimating={streaming}
+          normalizeHtmlIndentation={false}
+          controls={false}
           components={components}
-          // Raw HTML is never rendered: model output must not be able to inject
-          // markup, and no answer we care about needs it.
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={rehypePlugins}
           skipHtml
-          urlTransform={url => (/^(https?:|mailto:)/i.test(url) ? url : '')}
+          urlTransform={urlTransform}
         >
-          {normalised}
-        </ReactMarkdown>
+          {prepared}
+        </Streamdown>
       </MathErrorBoundary>
     </div>
   )

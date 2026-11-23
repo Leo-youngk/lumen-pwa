@@ -1,9 +1,12 @@
+import type { Chapter } from './store'
+
 /** Shape returned by `/api/models`. */
 export interface ModelOption {
   id: string
   name: string
   family: string
   capacity?: string
+  contextTokens?: number
 }
 
 interface RawModel {
@@ -44,7 +47,7 @@ export function formatCapacity(tokens: number): string {
   return `${Math.round(tokens / 1000)}K`
 }
 
-function readCapacity(raw: RawModel): string | undefined {
+function readContextTokens(raw: RawModel): number | undefined {
   const candidates = [
     raw.context_length,
     raw.context_window,
@@ -54,7 +57,16 @@ function readCapacity(raw: RawModel): string | undefined {
   const value = candidates.find(
     (item): item is number => Number.isSafeInteger(item) && (item ?? 0) > 0,
   )
-  return value ? formatCapacity(value) : undefined
+  return value
+}
+
+export interface EpubResult {
+  title: string
+  author: string
+  chapterCount: number
+  charCount: number
+  unreadable: number
+  chapters: Chapter[]
 }
 
 export interface ClientOptions {
@@ -78,7 +90,6 @@ export class LumenClient {
       credentials: 'same-origin',
       headers: {
         ...this.options.headers(),
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
         ...init.headers,
       },
     })
@@ -110,19 +121,24 @@ export class LumenClient {
 
   async models(signal?: AbortSignal): Promise<ModelOption[]> {
     const response = await this.request('/api/models', { signal })
-    if (!response.ok) throw new ApiError('模型列表获取失败。', response.status)
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      throw new ApiError(data.error ?? '模型列表获取失败。', response.status)
+    }
     const data = (await response.json()) as { data?: RawModel[] } | RawModel[]
     const list = Array.isArray(data) ? data : (data.data ?? [])
     return list
       .filter((item): item is RawModel & { id: string } => Boolean(item?.id))
-      .map((item, index) => ({
-        id: item.id,
-        name: item.name || item.id,
-        family: item.family || '服务端',
-        capacity: readCapacity(item) ?? undefined,
-        // Keep the accent rotation stable so colours do not shuffle on refresh.
-        _index: index,
-      })) as ModelOption[]
+      .map(item => {
+        const contextTokens = readContextTokens(item)
+        return {
+          id: item.id,
+          name: item.name || item.id,
+          family: item.family || '服务端',
+          capacity: contextTokens ? formatCapacity(contextTokens) : undefined,
+          contextTokens,
+        }
+      })
   }
 
   async health(): Promise<{ ok: boolean; provider: string; model: string }> {
@@ -144,7 +160,7 @@ export class LumenClient {
     const response = await this.request('/api/chat', {
       method: 'POST',
       body: JSON.stringify(body),
-      headers: { Accept: 'text/event-stream' },
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
       signal,
     })
 
@@ -215,6 +231,7 @@ export class LumenClient {
     const response = await this.request('/api/conversations', {
       method: 'PUT',
       body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
     })
     if (!response.ok) throw new ApiError('云端同步失败。', response.status)
   }
@@ -222,14 +239,22 @@ export class LumenClient {
   async uploadEpub(
     file: File,
     signal?: AbortSignal,
-  ): Promise<{ title: string; chapterCount: number; unreadable: number; markdown: string }> {
-    const form = new FormData()
-    form.append('file', file)
-    const response = await this.request('/api/epub', { method: 'POST', body: form, signal })
+  ): Promise<EpubResult> {
+    if (file.size > 16 * 1024 * 1024) throw new Error('EPUB 最大支持 16 MB。')
+    const response = await this.request('/api/epub', {
+      method: 'POST',
+      body: file,
+      headers: { 'Content-Type': 'application/epub+zip' },
+      signal: signal ?? AbortSignal.timeout?.(115_000),
+    })
     if (!response.ok) {
       const data = (await response.json().catch(() => ({}))) as { error?: string }
       throw new ApiError(data.error ?? 'EPUB 解析失败。', response.status)
     }
-    return response.json()
+    const book = (await response.json()) as EpubResult
+    if (!Array.isArray(book.chapters) || !book.chapters.length) {
+      throw new Error('EPUB 转换后没有可读章节。')
+    }
+    return book
   }
 }

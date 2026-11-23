@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ensureMath, splitMath, type MathSpan } from '@/lib/math'
+import { memo, useEffect, useState } from 'react'
+import { ensureMath } from '@/lib/math'
 import { cn } from '@/lib/cn'
 
 /**
@@ -10,53 +10,50 @@ import { cn } from '@/lib/cn'
  * the expression fails, the TeX is left visible rather than replaced by an
  * error box — a readable `\frac{a}{b}` beats a red message mid-answer.
  */
-export function MathBlock({ span }: { span: MathSpan }) {
-  const [html, setHtml] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
+export const MathBlock = memo(function MathBlock({ tex, display }: { tex: string; display: boolean }) {
+  const [rendered, setRendered] = useState<{ tex: string; display: boolean; html: string } | null>(null)
 
   useEffect(() => {
     let cancelled = false
     void ensureMath().then(katex => {
       if (cancelled) return
-      if (!katex) {
-        setFailed(true)
-        return
-      }
+      if (!katex) return
       try {
-        const rendered = katex.renderToString(span.tex, {
-          displayMode: span.display,
+        const html = katex.renderToString(tex, {
+          displayMode: display,
           throwOnError: false,
           strict: false,
           trust: false,
-          output: 'html',
+          output: 'htmlAndMathml',
         })
-        if (!cancelled) setHtml(rendered)
+        setRendered({ tex, display, html })
       } catch {
-        if (!cancelled) setFailed(true)
+        // The readable TeX fallback stays in place.
       }
     })
     return () => {
       cancelled = true
     }
-  }, [span.tex, span.display])
+  }, [tex, display])
 
-  if (failed || !html) {
+  const html = rendered?.tex === tex && rendered.display === display ? rendered.html : null
+  if (!html) {
     return (
       <code
         className={cn(
           'font-mono text-[0.9em] text-secondary',
-          span.display ? 'my-2 block overflow-x-auto whitespace-pre-wrap' : 'inline',
+          display ? 'my-2 block overflow-x-auto whitespace-pre-wrap' : 'inline',
         )}
       >
-        {span.display ? `$$${span.tex}$$` : `$${span.tex}$`}
+        {display ? `$$${tex}$$` : `$${tex}$`}
       </code>
     )
   }
 
-  if (span.display) {
+  if (display) {
     return (
       <div
-        className="scroll-pane my-3 overflow-x-auto py-1"
+        className="lumen-formula"
         // KaTeX output is sanitised by the library and rendered with
         // `trust: false`, so no user- or model-supplied markup can escape.
         dangerouslySetInnerHTML={{ __html: html }}
@@ -70,44 +67,4 @@ export function MathBlock({ span }: { span: MathSpan }) {
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )
-}
-
-/**
- * Render a run of text, expanding any math spans inside it.
- *
- * `renderText` receives the plain segments so the caller keeps its existing
- * inline formatting (bold, code, links) without this component knowing about
- * it.
- */
-export function TextWithMath({
-  text,
-  renderText,
-}: {
-  text: string
-  renderText: (plain: string) => React.ReactNode
-}) {
-  const parts = splitMath(text)
-  if (parts.length === 1 && typeof parts[0] === 'string') {
-    return <>{renderText(text)}</>
-  }
-  return (
-    <>
-      {parts.map((part, index) =>
-        typeof part === 'string' ? (
-          <span key={index}>{renderText(part)}</span>
-        ) : (
-          <MathBlock key={index} span={part} />
-        ),
-      )}
-    </>
-  )
-}
-
-/** Preload KaTeX for a whole message as soon as math is detected in it. */
-export function useMathPrefetch(source: string): void {
-  useEffect(() => {
-    if (source.includes('$') || source.includes('\\(') || source.includes('\\[')) {
-      void ensureMath()
-    }
-  }, [source])
-}
+})

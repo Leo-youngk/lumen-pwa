@@ -5,7 +5,7 @@ import { Icon } from './Icon'
 import { TypingIndicator } from './TypingIndicator'
 
 /**
- * The Markdown pipeline (react-markdown + remark + rehype, ~67 KB gzip) is
+ * The Markdown pipeline is
  * loaded the first time an answer is rendered. The home screen has no answers
  * and the sign-in screen has none either, so a cold start never pays for it.
  */
@@ -72,7 +72,7 @@ export const AssistantBubble = memo(function AssistantBubble({
           {/* Plain text is shown while the chunk loads, so a resumed
               conversation paints immediately instead of flashing blank. */}
           <Suspense fallback={<RawText text={message.content} />}>
-            <Markdown source={message.content} />
+            <Markdown source={message.content} streaming={streaming} />
           </Suspense>
           {streaming ? (
             <span
@@ -82,6 +82,7 @@ export const AssistantBubble = memo(function AssistantBubble({
           ) : null}
         </div>
       )}
+      {message.incomplete ? <p className="mt-1 text-[12px] text-quiet">回答未完成</p> : null}
 
       {compact ? null : <div className="h-2" />}
     </div>

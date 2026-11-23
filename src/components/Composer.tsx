@@ -84,15 +84,16 @@ export function Composer({
   }, [onSubmit, ready, value])
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== 'Enter' || event.shiftKey || !enterToSend) return
+    if (event.key !== 'Enter' || event.shiftKey) return
     // `isComposing` guards IME candidate selection.
-    if (event.nativeEvent.isComposing) return
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+    if (!enterToSend && !event.metaKey && !event.ctrlKey) return
     event.preventDefault()
     submit()
   }
 
   function pickFile(file: File | undefined) {
-    if (!file || !onAttach) return
+    if (!file || !onAttach || disabled || streaming) return
     onAttach(file)
   }
 

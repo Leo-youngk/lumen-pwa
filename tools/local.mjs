@@ -52,7 +52,7 @@ globalThis.fetch = async (url, options) => {
     { type: 'message_stop' },
   ])
   return stream([
-    { choices: [{ delta: { content: result } }] },
+    { choices: [{ delta: { content: result }, finish_reason: 'stop' }] },
     { choices: [], usage: { prompt_tokens: 27, completion_tokens: 16, total_tokens: 43 } },
   ])
 }

@@ -13,6 +13,7 @@ export interface ChatScreenProps {
   onOpenModels: () => void
   onOpenScope: () => void
   onUpload: (file: File) => void
+  uploading: boolean
 }
 
 export function ChatScreen({
@@ -21,6 +22,7 @@ export function ChatScreen({
   onOpenModels,
   onOpenScope,
   onUpload,
+  uploading,
 }: ChatScreenProps) {
   const {
     active,
@@ -28,6 +30,9 @@ export function ChatScreen({
     stop,
     retry,
     streaming,
+    streamingId,
+    readingProgress,
+    usage,
     error,
     clearError,
     settings,
@@ -43,13 +48,21 @@ export function ChatScreen({
 
   const messages = active?.messages ?? []
   const last = messages.at(-1)
+  const generating = streamingId === active?.id
+  const progressLabel = readingProgress?.stage === 'direct'
+    ? '正在使用所选范围的完整原文…'
+    : readingProgress?.stage === 'read'
+      ? `已读原文 ${readingProgress.done}/${readingProgress.total} 批`
+      : readingProgress
+        ? `正在汇总 ${readingProgress.done}/${readingProgress.total} 批`
+        : ''
 
   // Follow new content only while the reader is already at the bottom. Once
   // they scroll up to re-read, the view must stay put.
   useLayoutEffect(() => {
     const node = feed.current
     if (node && stick.current) node.scrollTop = node.scrollHeight
-  }, [messages.length, last?.content, last?.reasoning, error])
+  }, [messages.length, last?.content, last?.reasoning, error, progressLabel])
 
   // A new conversation always starts pinned to the bottom.
   useEffect(() => {
@@ -107,13 +120,16 @@ export function ChatScreen({
                 <AssistantBubble
                   key={message.id}
                   message={message}
-                  streaming={streaming && index === messages.length - 1}
+                  streaming={generating && !readingProgress && index === messages.length - 1}
                   compact={settings.compactMode}
                   fontSize={settings.fontSize}
                   lineHeight={settings.lineHeight}
                 />
               ),
             )}
+            {generating && progressLabel ? (
+              <p role="status" className="px-4 py-2 text-[13px] text-quiet">{progressLabel}</p>
+            ) : null}
 
             {error ? (
               <div className="mx-4 my-3 rounded-[14px] bg-accent-orange px-3.5 py-3 text-[14px] text-accent-orange-ink">
@@ -165,15 +181,22 @@ export function ChatScreen({
           void send(text)
         }}
         onStop={stop}
-        streaming={streaming}
+        streaming={generating}
+        disabled={uploading || (streaming && !generating)}
+        leading={uploading ? <p role="status" className="px-2 pb-1 text-[13px] text-quiet">正在把 EPUB 转为 Markdown…</p> : undefined}
         onAttach={onUpload}
         enterToSend={settings.enterToSend}
         placeholder={streaming ? '正在生成回答…' : '继续追问…'}
         trailing={
-          <ModelPill
-            label={models.length ? modelLabel(active.model || model) : '默认模型'}
-            onClick={onOpenModels}
-          />
+          <>
+            <span className="text-[11px] tabular-nums text-quiet" title={`本设备已记录 ${usage.total.toLocaleString()} tokens，${usage.unreported} 次请求无用量回报`}>
+              {usage.total ? new Intl.NumberFormat('zh-CN', { notation: 'compact' }).format(usage.total) : usage.unreported ? '—' : '0'} tokens
+            </span>
+            <ModelPill
+              label={models.length ? modelLabel(active.model || model) : '默认模型'}
+              onClick={onOpenModels}
+            />
+          </>
         }
       />
     </div>

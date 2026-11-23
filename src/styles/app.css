@@ -606,11 +606,21 @@
  */
 .lumen-table-wrap {
   margin: 0.7em 0;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
   border-radius: 10px;
   border: 1px solid var(--color-edge);
+  overflow: hidden;
+}
+
+.lumen-table__bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.2em 0.6em;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+.lumen-table__scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: thin;
 }
 
@@ -723,7 +733,7 @@
   font-size: 1.03em;
 }
 
-.lumen-prose .katex-display {
+.lumen-prose .lumen-formula {
   margin: 0.75em 0;
   padding: 0.15em 0;
   overflow-x: auto;
@@ -731,8 +741,10 @@
   overscroll-behavior-x: contain;
 }
 
-.lumen-prose .katex-display > .katex {
-  white-space: normal;
+.lumen-prose .lumen-formula > .katex-display {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
 }
 
 .lumen-prose .katex-error {

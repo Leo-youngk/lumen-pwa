@@ -57,11 +57,17 @@ export interface BookRecord {
   cover?: string
 }
 
+export interface Chapter {
+  title: string
+  text: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   reasoning?: string
+  incomplete?: boolean
   createdAt: number
 }
 
@@ -145,15 +151,37 @@ export function saveModel(model: string): void {
 /* ----------------------------------------------------------- conversations */
 
 export function loadConversations(): Conversation[] {
-  const stored = readJson<Conversation[]>(KEYS.conversations, [])
+  return validConversations(readJson(KEYS.conversations, []))
+}
+
+function validConversations(stored: unknown): Conversation[] {
   if (!Array.isArray(stored)) return []
-  return stored
-    .filter((item): item is Conversation => Boolean(item?.id && item?.messages))
+  return stored.filter((item): item is Conversation => Boolean(item?.id && Array.isArray(item.messages)))
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-export function saveConversations(conversations: Conversation[]): void {
-  writeJson(KEYS.conversations, conversations)
+export async function restoreConversations(): Promise<Conversation[]> {
+  const db = await openDb()
+  const current = await tx(db, 'kv', 'readonly', store => store.get('conversations-v2'))
+  if (Array.isArray(current)) return validConversations(current)
+
+  const legacy = await readExisting('lumen-kv', 'kv', 'conversations')
+  const deleted = new Set(loadDeleted())
+  const merged = new Map<string, Conversation>()
+  for (const item of [...validConversations(legacy), ...loadConversations()]) {
+    const previous = merged.get(item.id)
+    if (!deleted.has(item.id) && (!previous || item.updatedAt >= previous.updatedAt)) merged.set(item.id, item)
+  }
+  return validConversations([...merged.values()])
+}
+
+export async function saveConversations(conversations: Conversation[]): Promise<void> {
+  try {
+    const db = await openDb()
+    await tx(db, 'kv', 'readwrite', store => store.put(conversations, 'conversations-v2'))
+  } catch {
+    writeJson(KEYS.conversations, conversations)
+  }
 }
 
 export function loadDeleted(): string[] {
@@ -208,7 +236,7 @@ export function recordUsage(report: UsageReport | null): UsageState {
  * Books live in IndexedDB rather than localStorage because a converted book
  * can exceed the 4 MiB string limit that localStorage enforces.
  */
-const DB_NAME = 'lumen-kv'
+const DB_NAME = 'lumen-reading-v2'
 const DB_VERSION = 1
 const BOOK_STORE = 'books'
 const CHAPTER_STORE = 'chapters'
@@ -219,7 +247,7 @@ interface StoredBook {
 }
 interface StoredChapters {
   id: string
-  chapters: string[]
+  chapters: (Chapter | string)[]
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null
@@ -229,6 +257,7 @@ function openDb(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
     request.onupgradeneeded = () => {
       const db = request.result
+      if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv')
       if (!db.objectStoreNames.contains(BOOK_STORE)) {
         db.createObjectStore(BOOK_STORE, { keyPath: 'id' })
       }
@@ -243,42 +272,77 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 function tx<T>(
+  db: IDBDatabase,
   store: string,
   mode: IDBTransactionMode,
   run: (objectStore: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
-  return openDb().then(
-    db =>
-      new Promise<T>((resolve, reject) => {
-        const transaction = db.transaction(store, mode)
-        const request = run(transaction.objectStore(store))
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      }),
-  )
+  return new Promise<T>((resolve, reject) => {
+    const transaction = db.transaction(store, mode)
+    const request = run(transaction.objectStore(store))
+    transaction.oncomplete = () => resolve(request.result)
+    transaction.onabort = () => reject(transaction.error ?? request.error)
+  })
 }
 
-export async function putBook(meta: BookRecord, chapters: string[]): Promise<void> {
-  await Promise.all([
-    tx(BOOK_STORE, 'readwrite', store => store.put({ id: meta.id, meta })),
-    tx(CHAPTER_STORE, 'readwrite', store => store.put({ id: meta.id, chapters })),
-  ])
+export async function putBook(meta: BookRecord, chapters: Chapter[]): Promise<void> {
+  const db = await openDb()
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([BOOK_STORE, CHAPTER_STORE], 'readwrite')
+    transaction.objectStore(BOOK_STORE).put({ id: meta.id, meta })
+    transaction.objectStore(CHAPTER_STORE).put({ id: meta.id, chapters })
+    transaction.oncomplete = () => resolve()
+    transaction.onabort = () => reject(transaction.error)
+  })
 }
 
-export async function getBook(
-  id: string,
-): Promise<{ meta: BookRecord; chapters: string[] } | null> {
+function openExisting(name: string): Promise<IDBDatabase | null> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(name)
+    let missing = false
+    request.onupgradeneeded = () => {
+      missing = true
+      request.transaction?.abort()
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => missing ? resolve(null) : reject(request.error)
+  })
+}
+
+async function readExisting<T>(name: string, storeName: string, key: string): Promise<T | undefined> {
+  const db = await openExisting(name)
+  if (!db) return undefined
+  try {
+    return db.objectStoreNames.contains(storeName)
+      ? await tx<T | undefined>(db, storeName, 'readonly', store => store.get(key))
+      : undefined
+  } finally {
+    db.close()
+  }
+}
+
+export async function getBook(book: BookRecord): Promise<{ meta: BookRecord; chapters: Chapter[] } | null> {
+  const { id } = book
+  const db = await openDb()
   const [storedBook, storedChapters] = await Promise.all([
-    tx<StoredBook | undefined>(BOOK_STORE, 'readonly', store => store.get(id)),
-    tx<StoredChapters | undefined>(CHAPTER_STORE, 'readonly', store => store.get(id)),
+    tx<StoredBook | undefined>(db, BOOK_STORE, 'readonly', store => store.get(id)),
+    tx<StoredChapters | undefined>(db, CHAPTER_STORE, 'readonly', store => store.get(id)),
   ])
-  if (!storedBook?.meta || !storedChapters?.chapters?.length) return null
-  return { meta: storedBook.meta, chapters: storedChapters.chapters }
-}
+  const toChapters = (entries: (Chapter | string)[]) => entries.map((chapter, index) =>
+    typeof chapter === 'string' ? { title: `第 ${index + 1} 章`, text: chapter } : chapter,
+  )
+  if (storedBook?.meta && storedChapters?.chapters?.length) {
+    return { meta: storedBook.meta, chapters: toChapters(storedChapters.chapters) }
+  }
 
-export async function deleteBook(id: string): Promise<void> {
-  await Promise.all([
-    tx(BOOK_STORE, 'readwrite', store => store.delete(id)),
-    tx(CHAPTER_STORE, 'readwrite', store => store.delete(id)),
-  ])
+  const legacy = await readExisting<StoredChapters>('lumen-books', 'books', id)
+    ?? await readExisting<StoredChapters>('lumen-kv', CHAPTER_STORE, id)
+  let chapters = legacy?.chapters?.length ? toChapters(legacy.chapters) : undefined
+  if (!chapters?.length && typeof book.markdown === 'string' && book.markdown.trim()) {
+    chapters = [{ title: book.title, text: book.markdown }]
+  }
+  if (!chapters?.length) return null
+  const meta = { ...book, markdown: undefined, chapterCount: chapters.length }
+  await putBook(meta, chapters)
+  return { meta, chapters }
 }
