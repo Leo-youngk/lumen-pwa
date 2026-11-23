@@ -125,6 +125,7 @@ test('Go uses the current catalog for saved legacy addresses and reports authent
   }
   let status = 200
   t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(options.redirect, 'manual')
     assert.equal(url, 'https://opencode.ai/inference/go/v1/models')
     assert.equal(options.headers.Authorization, 'Bearer oc_sk_test_fixture')
     return Response.json(status === 200 ? fixture : { error: 'Upstream error' }, { status })
@@ -152,6 +153,7 @@ test('Go sends a stable session header to the current chat API', async t => {
   const login = await sessionHeaders()
   const calls = []
   t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(options.redirect, 'manual')
     calls.push({ url, headers: options.headers })
     return new Response('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n')
   })
@@ -173,4 +175,24 @@ test('Go sends a stable session header to the current chat API', async t => {
     assert.equal(call.headers['x-opencode-session'], 'ses_an-existing-conversation')
     assert.equal(call.headers['User-Agent'], 'Lumen-PWA/1.0')
   }
+})
+
+test('provider redirects are surfaced without forwarding the provider key', async t => {
+  const login = await sessionHeaders()
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push(url)
+    assert.equal(options.redirect, 'manual')
+    return new Response(null, { status: 307, headers: { Location: 'https://elsewhere.example/redirect' } })
+  })
+  const headers = { ...login, 'X-Api-Base': 'https://models.example.com/v1', 'X-Api-Key': 'fixture' }
+  const models = await worker.fetch(new Request(origin + '/api/models', { headers }), env)
+  const chat = await worker.fetch(new Request(origin + '/api/chat', {
+    method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Hi' }] }),
+  }), env)
+  for (const response of [models, chat]) {
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).error, /要求跳转/)
+  }
+  assert.deepEqual(calls, ['https://models.example.com/v1/models', 'https://models.example.com/v1/chat/completions'])
 })

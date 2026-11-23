@@ -26,6 +26,9 @@ function json(data, status = 200) {
   });
 }
 __name(json, "json");
+function providerRedirect(response) {
+  return [301, 302, 303, 307, 308].includes(response.status);
+}
 function parseCookie(request, name) {
   const cookie = request.headers.get("Cookie") || "";
   return cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || null;
@@ -303,7 +306,7 @@ async function handleChat(request, env) {
   try {
     const sessionHeaders = providerSessionHeaders(baseUrl, payload.session_id);
     const fetchUpstream = body => fetch(providerChatUrl(baseUrl, endpointPath), {
-      redirect: "error",
+      redirect: "manual",
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -327,6 +330,9 @@ async function handleChat(request, env) {
   } catch (error) {
     diag("chat.connect-failed", { model, keySource, keyId, error: error instanceof Error ? error.message : String(error), ms: Date.now() - startedAt });
     return json({ error: "\u65E0\u6CD5\u8FDE\u63A5 OpenCode Go\u3002" }, 502);
+  }
+  if (providerRedirect(upstream)) {
+    return json({ error: "模型服务要求跳转，请在设置中填写模型 API 的实际地址。" }, 502);
   }
   if (!upstream.ok || !upstream.body) {
     const body = await upstream.text().catch(() => "");
@@ -477,7 +483,10 @@ async function handleModels(request, env) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1e4);
   try {
-    const response = await fetch(providerModelsUrl(baseUrl), { headers: { Authorization: `Bearer ${apiKey}` }, signal: controller.signal, redirect: "error" });
+    const response = await fetch(providerModelsUrl(baseUrl), { headers: { Authorization: `Bearer ${apiKey}` }, signal: controller.signal, redirect: "manual" });
+    if (providerRedirect(response)) {
+      return json({ error: "模型列表接口要求跳转，请在设置中填写模型 API 的实际地址。" }, 502);
+    }
     if (response.status === 401) {
       return json({ error: go
         ? "OpenCode 拒绝了这个 Key。请在 Console 的个人 API Keys 中复制所订阅 Go 工作区的有效密钥（oc_sk_ 开头）。"
