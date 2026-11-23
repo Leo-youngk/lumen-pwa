@@ -260,7 +260,7 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
   async function save() {
     if (connecting) return
     const apiBaseUrl = base.trim()
-    const apiKey = key.trim()
+    const apiKey = key.trim().replace(/^Bearer\s+/i, '')
     if (apiBaseUrl && (!/^https:\/\//i.test(apiBaseUrl) || !apiKey)) {
       setMessage('请填写以 https:// 开头的地址，以及该服务的 API Key。')
       return
@@ -291,7 +291,7 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
             type="url"
             value={base}
             onChange={event => setBase(event.target.value)}
-            placeholder="https://服务地址/v1"
+            placeholder="OpenCode Go 留空"
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
@@ -309,7 +309,7 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
           />
         </label>
         <p className="text-[13px] leading-relaxed text-quiet">
-          留空则使用默认服务。Key 只保存在本设备的浏览器里，随请求头发送。
+          OpenCode Go 的接口地址留空即可。Key 从订阅所在工作区的个人 API Keys 中复制。
         </p>
         <button
           type="button"

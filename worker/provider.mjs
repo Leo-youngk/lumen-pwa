@@ -1,10 +1,34 @@
+const goOrigin = 'https://opencode.ai'
+export const goBaseUrl = `${goOrigin}/inference/go`
+
+export function isOpenCodeGo(baseUrl) {
+  const parsed = new URL(baseUrl)
+  return parsed.origin === goOrigin && /^\/(?:zen\/go\/v1|inference\/go)(?:\/|$)/.test(parsed.pathname)
+}
+
 export function providerRoute(baseUrl, model) {
-  const base = new URL(baseUrl)
-  if (base.hostname !== 'opencode.ai' || !base.pathname.startsWith('/zen/go/')) return '/chat/completions'
+  if (!isOpenCodeGo(baseUrl)) return '/chat/completions'
   const id = model.toLowerCase()
   if (/^(gpt-|grok-)/.test(id)) return '/responses'
-  if (/^(minimax-|qwen)/.test(id)) return '/messages'
+  if (/^(claude-|minimax-|qwen)/.test(id)) return '/messages'
   return '/chat/completions'
+}
+
+export function providerModelsUrl(baseUrl) {
+  return isOpenCodeGo(baseUrl) ? `${goBaseUrl}/v1/models` : `${baseUrl}/models`
+}
+
+export function providerChatUrl(baseUrl, endpoint) {
+  if (!isOpenCodeGo(baseUrl)) return `${baseUrl}${endpoint}`
+  const api = endpoint === '/messages' ? 'anthropic' : 'openai'
+  return `${goBaseUrl}/${api}/v1${endpoint}`
+}
+
+export function providerSessionHeaders(baseUrl, sessionId) {
+  if (!isOpenCodeGo(baseUrl)) return {}
+  const id = typeof sessionId === 'string' && /^[A-Za-z0-9_-]{8,100}$/.test(sessionId)
+    ? sessionId : crypto.randomUUID()
+  return { 'x-opencode-session': `ses_${id}`, 'User-Agent': 'Lumen-PWA/1.0' }
 }
 
 export function parseProviderUsage(event, seen) {

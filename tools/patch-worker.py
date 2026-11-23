@@ -8,9 +8,10 @@ def replace(old, new, count=1):
     worker = worker.replace(old, new)
 
 worker = """import { handleEpub } from './epub.mjs';
-import { providerRoute, parseProviderUsage, usageEvent } from './provider.mjs';
+import { goBaseUrl, isOpenCodeGo, providerRoute, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
 
 """ + worker
+replace('var DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";', 'var DEFAULT_BASE_URL = goBaseUrl;')
 replace('  if (!client) return { baseUrl: fallback, source: "server", error: null };',
 '''  if (!client) return { baseUrl: fallback, source: "server", error: null };
   if (!request.headers.get("X-Api-Key")?.trim() && client.replace(/\\/+$/, "") !== fallback) {
@@ -33,8 +34,10 @@ replace('  }) : JSON.stringify({\n    model,\n    messages: openAiMessages,\n   
     stream: true,
     stream_options: { include_usage: true },''')
 replace('    upstream = await fetch(`${baseUrl}${endpointPath}`, {',
-'''    const fetchUpstream = body => fetch(`${baseUrl}${endpointPath}`, {
+'''    const sessionHeaders = providerSessionHeaders(baseUrl, payload.session_id);
+    const fetchUpstream = body => fetch(providerChatUrl(baseUrl, endpointPath), {
       redirect: "error",''')
+replace('        Accept: "text/event-stream"', '        Accept: "text/event-stream",\n        ...sessionHeaders')
 replace('      body: upstreamBody,\n      signal: upstreamController.signal\n    });',
 '''      body,
       signal: upstreamController.signal
@@ -67,6 +70,7 @@ replace('      if (failure) await writer.write(sse({ type: "error", error: failu
       if (reported) await writer.write(sse(reported));
       if (failure) await writer.write(sse({ type: "error", error: failure }));''')
 replace('signal: controller.signal });','signal: controller.signal, redirect: "error" });')
+replace('fetch(`${baseUrl}/models`,', 'fetch(providerModelsUrl(baseUrl),')
 replace('      if (url.pathname === "/api/chat" && request.method === "POST") return handleChat(request, env);',
 '''      if (url.pathname === "/api/epub" && request.method === "POST") return handleEpub(request);
       if (url.pathname === "/api/chat" && request.method === "POST") return handleChat(request, env);''')

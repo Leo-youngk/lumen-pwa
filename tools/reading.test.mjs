@@ -76,7 +76,7 @@ test('Worker distinguishes successful completion from EOF after partial text and
   let upstreamFrames
   const calls = []
   t.mock.method(globalThis, 'fetch', async (url, options) => {
-    calls.push({ url, body: JSON.parse(options.body) })
+    calls.push({ url, headers: options.headers, body: JSON.parse(options.body) })
     return new Response(upstreamFrames)
   })
 
@@ -107,5 +107,70 @@ test('Worker distinguishes successful completion from EOF after partial text and
   const complete = await chat(partial + usage + 'data: [DONE]\n\n')
   assert.deepEqual(complete.map(event => event.type), ['text', 'usage', 'done'])
   assert.equal(calls[0].url, 'https://models.example.com/v1/chat/completions')
+  assert.equal(calls[0].headers['x-opencode-session'], undefined)
   assert.match(calls[0].body.messages[0].content, /全书末尾线索/)
+})
+
+test('Go uses the current catalog for saved legacy addresses and reports authentication and permission errors', async t => {
+  const headers = {
+    ...await sessionHeaders(),
+    'X-Api-Base': 'https://opencode.ai/zen/go/v1',
+    'X-Api-Key': 'Bearer oc_sk_test_fixture',
+  }
+  const fixture = {
+    data: [
+      { id: 'kimi-k3', type: 'chat', limit: { context: 262_144 } },
+      { id: 'not-chat', type: 'embedding' },
+    ],
+  }
+  let status = 200
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, 'https://opencode.ai/inference/go/v1/models')
+    assert.equal(options.headers.Authorization, 'Bearer oc_sk_test_fixture')
+    return Response.json(status === 200 ? fixture : { error: 'Upstream error' }, { status })
+  })
+
+  async function models() {
+    return worker.fetch(new Request(origin + '/api/models', { headers }), env)
+  }
+  const catalog = await models()
+  assert.equal(catalog.status, 200)
+  assert.deepEqual((await catalog.json()).data, [fixture.data[0]])
+
+  status = 401
+  const invalid = await models()
+  assert.equal(invalid.status, 502)
+  assert.match((await invalid.json()).error, /oc_sk_/)
+
+  status = 403
+  const forbidden = await models()
+  assert.equal(forbidden.status, 502)
+  assert.match((await forbidden.json()).error, /Models › Read/)
+})
+
+test('Go sends a stable session header to the current chat API', async t => {
+  const login = await sessionHeaders()
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push({ url, headers: options.headers })
+    return new Response('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n')
+  })
+  for (const base of [undefined, 'https://opencode.ai/inference/go/v1/models']) {
+    const headers = base ? { ...login, 'X-Api-Base': base, 'X-Api-Key': 'oc_sk_test_fixture' } : login
+    const response = await worker.fetch(new Request(origin + '/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        model: 'kimi-k3',
+        session_id: 'an-existing-conversation',
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    }), env)
+    assert.equal(response.status, 200)
+    assert.match(await response.text(), /"type":"done"/)
+  }
+  for (const call of calls) {
+    assert.equal(call.url, 'https://opencode.ai/inference/go/openai/v1/chat/completions')
+    assert.equal(call.headers['x-opencode-session'], 'ses_an-existing-conversation')
+    assert.equal(call.headers['User-Agent'], 'Lumen-PWA/1.0')
+  }
 })

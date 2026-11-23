@@ -17,6 +17,7 @@ interface RawModel {
   context_window?: number
   max_context_tokens?: number
   top_provider?: { context_length?: number }
+  limit?: { context?: number }
 }
 
 /** A single streamed event from `/api/chat`. */
@@ -53,6 +54,7 @@ function readContextTokens(raw: RawModel): number | undefined {
     raw.context_window,
     raw.max_context_tokens,
     raw.top_provider?.context_length,
+    raw.limit?.context,
   ]
   const value = candidates.find(
     (item): item is number => Number.isSafeInteger(item) && (item ?? 0) > 0,

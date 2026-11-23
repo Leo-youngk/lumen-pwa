@@ -1,11 +1,11 @@
 import { handleEpub } from './epub.mjs';
-import { providerRoute, parseProviderUsage, usageEvent } from './provider.mjs';
+import { goBaseUrl, isOpenCodeGo, providerRoute, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
 
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // worker/index.ts
-var DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";
+var DEFAULT_BASE_URL = goBaseUrl;
 var MAX_MESSAGES = 80;
 var MAX_CONTENT_LENGTH = 4e5;
 var MAX_TOTAL_CONTENT_LENGTH = 6e5;
@@ -177,8 +177,9 @@ function diag(event, data) {
 }
 __name(diag, "diag");
 function upstreamApiKey(request, env) {
-  const client = request.headers.get("X-Api-Key")?.trim();
-  return { key: client || env.OPENCODE_GO_API_KEY, source: client ? "client" : "server" };
+  const client = request.headers.get("X-Api-Key")?.trim().replace(/^Bearer\s+/i, "");
+  const configured = env.OPENCODE_GO_API_KEY?.trim().replace(/^Bearer\s+/i, "");
+  return { key: client || configured, source: client ? "client" : "server" };
 }
 __name(upstreamApiKey, "upstreamApiKey");
 function upstreamBaseUrl(request, env) {
@@ -300,13 +301,15 @@ async function handleChat(request, env) {
   const upstreamController = new AbortController();
   let upstream;
   try {
-    const fetchUpstream = body => fetch(`${baseUrl}${endpointPath}`, {
+    const sessionHeaders = providerSessionHeaders(baseUrl, payload.session_id);
+    const fetchUpstream = body => fetch(providerChatUrl(baseUrl, endpointPath), {
       redirect: "error",
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        Accept: "text/event-stream"
+        Accept: "text/event-stream",
+        ...sessionHeaders
       },
       body,
       signal: upstreamController.signal
@@ -327,7 +330,7 @@ async function handleChat(request, env) {
   }
   if (!upstream.ok || !upstream.body) {
     const body = await upstream.text().catch(() => "");
-    let message = body;
+    let message = "";
     try {
       const parsed = JSON.parse(body);
       const raw = parsed.error;
@@ -335,20 +338,16 @@ async function handleChat(request, env) {
       if (typeof nested === "string" && nested) message = nested;
     } catch {
     }
-    const isAuthFailure = /AuthError|api key/i.test(message);
-    const status = upstream.status >= 500 || !isAuthFailure ? 502 : upstream.status;
+    if (upstream.status === 401) message = "模型服务拒绝了 API Key。请检查密钥是否有效，或在设置里重新连接。";
     diag("chat.upstream-error", {
       model,
       endpoint: endpointPath,
       keySource,
       keyId,
       upstreamStatus: upstream.status,
-      returnedStatus: status,
-      message: message.slice(0, 500),
-      rawBody: body.slice(0, 500),
       ms: Date.now() - startedAt
     });
-    return json({ error: message || `OpenCode Go \u8FD4\u56DE ${upstream.status}` }, status);
+    return json({ error: message.slice(0, 500) || `模型服务返回 HTTP ${upstream.status}。` }, 502);
   }
   const encoder = new TextEncoder();
   const sse = /* @__PURE__ */ __name((data) => encoder.encode(`data: ${JSON.stringify(data)}
@@ -471,23 +470,36 @@ async function handleChat(request, env) {
 __name(handleChat, "handleChat");
 async function handleModels(request, env) {
   const { key: apiKey } = upstreamApiKey(request, env);
-  if (!apiKey) return json({ error: "\u670D\u52A1\u7AEF\u8FD8\u6CA1\u6709\u914D\u7F6E\u6A21\u578B\u670D\u52A1\u5BC6\u94A5\u3002" }, 503);
+  if (!apiKey) return json({ error: "请在设置中填写模型服务的 API Key。" }, 503);
   const { baseUrl, error: baseUrlError } = upstreamBaseUrl(request, env);
   if (baseUrlError) return json({ error: baseUrlError }, 400);
+  const go = isOpenCodeGo(baseUrl);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1e4);
   try {
-    const response = await fetch(`${baseUrl}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: controller.signal, redirect: "error" });
-    const body = await response.text();
-    if (!response.ok) return json({ error: `\u6A21\u578B\u5217\u8868\u63A5\u53E3\u8FD4\u56DE ${response.status}` }, 502);
-    try {
-      JSON.parse(body);
-    } catch {
-      return json({ error: "\u6A21\u578B\u5217\u8868\u8FD4\u56DE\u4E86\u975E JSON \u5185\u5BB9\u3002" }, 502);
+    const response = await fetch(providerModelsUrl(baseUrl), { headers: { Authorization: `Bearer ${apiKey}` }, signal: controller.signal, redirect: "error" });
+    if (response.status === 401) {
+      return json({ error: go
+        ? "OpenCode 拒绝了这个 Key。请在 Console 的个人 API Keys 中复制所订阅 Go 工作区的有效密钥（oc_sk_ 开头）。"
+        : "模型服务拒绝了这个 API Key，请检查是否有效。" }, 502);
     }
-    return new Response(body, { status: 200, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+    if (response.status === 403) {
+      return json({ error: go
+        ? "这个 OpenCode Key 无权读取模型列表。请检查工作区和 Models › Read 权限。"
+        : "这个 API Key 无权读取模型列表。" }, 502);
+    }
+    if (!response.ok) return json({ error: `模型列表接口返回 HTTP ${response.status}。` }, 502);
+    const body = await response.json().catch(() => null);
+    const list = Array.isArray(body) ? body : body?.data;
+    if (!Array.isArray(list)) return json({ error: "模型列表格式有误，请确认接口地址填写的是基础地址。" }, 502);
+    if (!go) return json(body);
+    const models = list.filter((entry) => typeof entry?.id === "string" && (!entry.type || entry.type === "chat"));
+    if (!models.length) {
+      return json({ error: "这个 Key 对应的工作区没有可用的 Go 对话模型，请检查 Go 订阅和模型权限。" }, 502);
+    }
+    return json({ data: models });
   } catch {
-    return json({ error: "\u65E0\u6CD5\u8FDE\u63A5 OpenCode Go \u6A21\u578B\u5217\u8868\u3002" }, 502);
+    return json({ error: "连接模型列表失败，请检查接口地址或稍后重试。" }, 502);
   } finally {
     clearTimeout(timeout);
   }

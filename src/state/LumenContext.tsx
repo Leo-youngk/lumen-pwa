@@ -381,7 +381,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         }
 
         try {
-          await requestClient.chat({ ...body, model: selectedId }, event => {
+          await requestClient.chat({ ...body, model: selectedId, session_id: conversationId }, event => {
             if (event.type === 'usage') {
               const input = event.input ?? 0
               const outputTokens = event.output ?? 0
