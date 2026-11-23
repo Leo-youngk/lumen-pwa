@@ -1,31 +1,48 @@
 {
-  "name": "Lumen — 当前对话",
+  "name": "Lumen",
   "short_name": "Lumen",
-  "description": "一个只专注当前对话的 AI PWA。",
+  "description": "本地优先的阅读对话工作台",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
   "background_color": "#f7f5ee",
   "theme_color": "#f7f5ee",
-  "orientation": "portrait",
   "lang": "zh-CN",
+  "dir": "ltr",
+  "categories": ["productivity", "books"],
   "icons": [
     {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "新对话",
+      "url": "/",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

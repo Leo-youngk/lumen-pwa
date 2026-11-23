@@ -1,30 +1,68 @@
-# Lumen PWA
+# Lumen
 
-Cloudflare Worker `lumen-go-pwa`. The original editable repository was not available. The `base/` directory contains the assets and Worker recovered from Cloudflare production version 53. New code lives under `client/` and `worker/`. The build applies verified changes to the recovered bundles to retain the existing login, conversation history, settings, Markdown display, and IndexedDB records.
+本地优先的个人 AI 对话与 EPUB 阅读工作台。前端是 iOS 质感的 PWA，后端是 Cloudflare Worker。
 
-## Lumen reading interface
+- **首页 / 对话 / 历史 / 设置** 四个界面，移动优先，宽屏展开侧栏
+- **EPUB 上传** 后转为 Markdown，可按章提问
+- **流式回答**，思考过程可折叠，Token 用量按设备统计
+- **四套配色**（浅色 / 深色 / 单色 / 米色）
+- 对话与设置存在本地，可选与 Worker 的 KV 同步
 
-Lumen has an original reading layout with paper and pine colors, serif text for replies, a left-aligned home screen, and a split navigation layout on desktop. EPUB can be selected through the file picker or dropped into the desktop composer. Model and chapter pickers leave the draft in place and respond to Escape, backdrop clicks, or a downward drag. Animations respect the reduced-motion preference.
+## 目录
 
-The existing Cloudflare API serves the EPUB, model, and conversation flows. The design does not require a new runtime dependency.
+```
+src/
+  components/     Sheet、Composer、列表行、导航栏、消息渲染
+  screens/        首页、对话、历史、设置、登录、两个弹层
+  state/          LumenContext：会话、模型、流式、用量
+  lib/            API 客户端、本地存储、视口与主题
+  styles/         Tailwind 主题与设计令牌
+worker/           Cloudflare Worker：API、EPUB 解析、模型供应商适配
+  index.mjs       入口（由 tools/patch-worker.py 从 base/worker.mjs 生成）
+base/             从原生产版本恢复的 Worker 与资源，patch 脚本的输入
+mock/             本地 mock API，供前端独立开发
+tools/build.mjs   产出 built/（Worker bundle + 静态资源）
+public/           PWA 图标、manifest、service worker
+```
 
-## Build and verify
+## 本地开发
 
-1. Run `npm ci`.
-2. Run `python3 tools/build.py`. This produces the Worker entry point in `built/worker.mjs` and the PWA assets in `public/`.
-3. Start the local test server with `node tools/local.mjs`. The local service simulates the model providers and uses `local-test-only` as the test login.
-4. Run `python3 tools/smoke.py` with Playwright and Chromium installed. Set `LUMEN_CHROME` to the path of a different Chromium binary if needed.
+```bash
+npm install
+node mock/server.mjs &   # mock API，监听 8787
+npm run dev              # http://localhost:4173
+```
 
-The browser test exercises the EPUB API, downloading the Markdown, a long book with markers in each chapter, token totals, automatic model discovery after a provider change, three provider response formats, and seven viewport widths.
+登录令牌是 `local-test-only`（见 `mock/server.mjs` 顶部的 `MOCK_TOKEN`）。`vite.config.ts` 把 `/api` 代理到 8787。
 
-## Behavior
+## 类型与构建
 
-EPUBs are converted on the Worker in EPUB reading order. The app keeps the converted text in the device's existing IndexedDB database and lets the user download it as Markdown. The EPUB upload limit is 16 MiB and the converted Markdown limit is 4 MiB. An upload fails on a missing chapter rather than reporting a complete conversion. Image-only sections are reported when text cannot be extracted.
+```bash
+npm run typecheck        # tsc --noEmit
+npm run build            # 前端 → dist/
+node tools/build.mjs     # 完整产物 → built/worker.mjs + built/public/
+```
 
-When the model context can accommodate the requested source, the app sends the full Markdown for the requested scope. For longer material, it sends every segment in that scope in batches and passes the resulting notes to the final answer. The final response therefore receives analysis notes for books above the model context limit. The chosen model provider receives the text required for the request.
+## 部署到 Cloudflare
 
-The usage counter records input and output reported by the provider, including intermediate book analysis requests. It is stored on the current device. Requests that did not return usage are counted separately in Settings.
+```bash
+python3 tools/patch-worker.py   # 生成 worker/index.mjs（如未提交）
+node tools/build.mjs
+cp wrangler.example.jsonc wrangler.jsonc   # 填入 Worker 名称与 KV namespace ID
+npx wrangler secret put APP_ACCESS_TOKEN
+npx wrangler secret put OPENCODE_GO_API_KEY
+npx wrangler deploy
+```
 
-## Deployment
+## 设计约定
 
-Copy `wrangler.example.jsonc` to `wrangler.jsonc` and replace the Worker name and KV namespace ID with your own values. Configure `APP_ACCESS_TOKEN` and `OPENCODE_GO_API_KEY` as Cloudflare Worker secrets, and set the provider URL and model for your environment. Build the project before publishing with Wrangler.
+- **设计令牌全部在 `src/styles/app.css` 的 `@theme` 里**。组件不写死颜色，深色模式靠覆盖令牌而不是 `dark:` 变体。
+- **整个应用装在一个圆角面板里**（`.app-panel`），面板外露出画布色作为间隙。面板高度取自 `--app-height`（视觉视口），键盘弹出时面板收缩。
+- **玻璃层用 `--glass-*`**。导航栏是 `absolute` 覆盖在滚动区之上——如果用 `sticky` 作为 flex 兄弟节点，滚动区会从它下方开始，`backdrop-filter` 就没有内容可模糊。
+- **安全区只在 `.app-frame` 上计算一次**，面板内部不再叠加。
+- **弹层**基于原生 `<dialog>` + `showModal()`，焦点陷阱、ESC、遮罩交给浏览器。
+- **本地存储的键名是兼容契约**（见 `src/lib/store.ts` 顶部注释），改动会导致历史对话丢失。
+
+## 截图
+
+`node tools/shoot.mjs /tmp/shots` 用本机 Chrome 通过 CDP 截取各界面，需要 `CHROME` 环境变量指向 Chrome 可执行文件。
