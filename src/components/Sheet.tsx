@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/cn'
-import { useScrollLock } from '@/lib/viewport'
 import { IconButton } from './Icon'
 
 export interface SheetProps {
   open: boolean
   title?: string
   onClose: () => void
+  onDismissed?: () => void
   children: ReactNode
   /** `models` and `tall` grow past the default half-height detent. */
   size?: 'default' | 'tall'
@@ -30,35 +30,35 @@ export interface SheetProps {
  * - `data-state` drives the enter/exit transitions so the exit animation can
  *   finish before the dialog closes.
  */
-export function Sheet({ open, title, onClose, children, size = 'default', className }: SheetProps) {
+export function Sheet({ open, title, onClose, onDismissed, children, size = 'default', className }: SheetProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const sheet = useRef<HTMLDivElement>(null)
-  const [mounted, setMounted] = useState(open)
-  const [state, setState] = useState<'open' | 'closed'>('closed')
+  const [retained, setRetained] = useState(open)
+  const titleId = useId()
   const dragState = useRef({ startY: 0, startTime: 0, offset: 0, active: false })
+  const dismissedRef = useRef(onDismissed)
+  dismissedRef.current = onDismissed
 
-  useScrollLock(mounted)
-
-  useEffect(() => {
-    if (open) setMounted(true)
-  }, [open])
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = dialog.current
     if (!node) return
-    if (open && !node.open) {
-      node.showModal()
-      setState('open')
-    } else if (!open && node.open) {
-      setState('closed')
-      const delay = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 240
+    if (open) {
+      if (!node.open) {
+        const focused = document.activeElement
+        if (focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement) focused.blur()
+        node.showModal()
+      }
+      setRetained(true)
+    } else if (node.open) {
+      const delay = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180
       const timer = window.setTimeout(() => {
-        if (node.open) node.close()
-        setMounted(false)
+        node.close()
+        setRetained(false)
+        dismissedRef.current?.()
       }, delay)
       return () => window.clearTimeout(timer)
     }
-  }, [open, mounted])
+  }, [open])
 
   const finishDrag = useCallback(
     (velocity: number) => {
@@ -112,18 +112,16 @@ export function Sheet({ open, title, onClose, children, size = 'default', classN
     finishDrag(drag.offset / elapsed)
   }
 
-  if (!mounted) return null
+  if (!open && !retained) return null
 
   return createPortal(
     <dialog
       ref={dialog}
-      className="fixed inset-0 z-50 m-0 size-full max-h-none max-w-none bg-transparent p-0 [&::backdrop]:bg-(--scrim) [&::backdrop]:backdrop-blur-[2px]"
+      aria-labelledby={title ? titleId : undefined}
+      className="app-dialog fixed inset-x-0 z-50 m-0 w-full max-h-none max-w-none bg-transparent p-0"
       onCancel={event => {
         event.preventDefault()
         onClose()
-      }}
-      onClose={() => {
-        if (open) onClose()
       }}
       onClick={event => {
         // Only a press on the dialog itself (the area around the sheet) closes.
@@ -132,18 +130,14 @@ export function Sheet({ open, title, onClose, children, size = 'default', classN
     >
       <div
         ref={sheet}
-        data-state={state}
+        data-state={open ? 'open' : 'closed'}
         className={cn(
-          'absolute inset-x-0 bottom-0 mx-auto flex max-h-[88dvh] w-full max-w-[560px] flex-col',
+          'app-sheet absolute inset-x-0 bottom-0 mx-auto flex w-full max-w-[560px] flex-col',
           'glass-sheet rounded-t-[25px] border-t border-x shadow-[0_-1px_0_var(--glass-highlight),var(--glass-shadow)]',
-          'pb-(--safe-bottom)',
-          'transition-[transform,opacity] duration-240 ease-(--ease-enter)',
-          'data-[state=closed]:translate-y-full data-[state=closed]:opacity-0',
-          'data-[state=open]:translate-y-0 data-[state=open]:opacity-100',
-          size === 'tall' && 'min-h-[70dvh]',
+          'pb-(--app-safe-bottom)',
+          size === 'tall' && 'app-sheet-tall',
           className,
         )}
-        style={{ transform: undefined }}
       >
         <div
           className="flex shrink-0 cursor-grab touch-none justify-center pt-2 pb-1 active:cursor-grabbing"
@@ -157,7 +151,7 @@ export function Sheet({ open, title, onClose, children, size = 'default', classN
 
         {title ? (
           <header className="flex shrink-0 items-center gap-2 px-4 pb-2">
-            <h2 className="flex-1 text-[17px] font-semibold tracking-[-0.01em]">{title}</h2>
+            <h2 id={titleId} className="flex-1 text-[17px] font-semibold tracking-[-0.01em]">{title}</h2>
             <IconButton icon="close" label="关闭" variant="quiet" onClick={onClose} />
           </header>
         ) : null}

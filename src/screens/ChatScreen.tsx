@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { Composer } from '@/components/Composer'
 import { Icon, IconButton } from '@/components/Icon'
 import { AssistantBubble, UserBubble } from '@/components/Message'
@@ -63,12 +63,6 @@ export function ChatScreen({
     const node = feed.current
     if (node && stick.current) node.scrollTop = node.scrollHeight
   }, [messages.length, last?.content, last?.reasoning, error, progressLabel])
-
-  // A new conversation always starts pinned to the bottom.
-  useEffect(() => {
-    stick.current = true
-    setBelowFold(false)
-  }, [active?.id])
 
   const onScroll = useCallback(() => {
     const node = feed.current

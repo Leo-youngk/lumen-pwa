@@ -160,10 +160,7 @@ export function SettingsScreen({
         </div>
       </Sheet>
 
-      <AdvancedSheet open={advanced} onClose={() => setAdvanced(false)} onConnected={() => {
-        setAdvanced(false)
-        onOpenModels()
-      }} />
+      <AdvancedSheet open={advanced} onClose={() => setAdvanced(false)} onConnected={onOpenModels} />
     </div>
   )
 }
@@ -258,6 +255,7 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
   const [key, setKey] = useState(settings.apiKey)
   const [message, setMessage] = useState('')
   const [connecting, setConnecting] = useState(false)
+  const showModelsOnDismiss = useRef(false)
 
   async function save() {
     if (connecting) return
@@ -271,7 +269,8 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
     setConnecting(true)
     try {
       await connectProvider(apiBaseUrl, apiKey)
-      onConnected()
+      showModelsOnDismiss.current = true
+      onClose()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '无法连接模型服务。')
     } finally {
@@ -280,7 +279,11 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
   }
 
   return (
-    <Sheet open={open} title="自定义接口" onClose={onClose}>
+    <Sheet open={open} title="自定义接口" onClose={onClose} onDismissed={() => {
+      if (!showModelsOnDismiss.current) return
+      showModelsOnDismiss.current = false
+      onConnected()
+    }}>
       <div className="space-y-4 pb-2">
         <label className="block">
           <span className="section-label mb-1.5 block">接口地址</span>

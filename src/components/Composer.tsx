@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { Icon, IconButton } from './Icon'
 
@@ -38,8 +38,7 @@ export interface ComposerProps {
  *   the dock never swallows the conversation.
  * - Enter sends, Shift+Enter breaks the line, and IME composition is respected
  *   so that confirming a Chinese candidate does not fire a send.
- * - It rides above the keyboard via `--kb-offset`, which the viewport hook
- *   keeps current.
+ * - The app viewport keeps the dock above the keyboard.
  */
 export function Composer({
   value,
@@ -72,12 +71,6 @@ export function Composer({
     node.style.height = `${Math.min(112, Math.max(24, node.scrollHeight))}px`
   }, [value])
 
-  // Refocus after a reply finishes so the next question can be typed straight
-  // away, which is what an installed app feels like.
-  useEffect(() => {
-    if (!streaming) field.current?.focus({ preventScroll: true })
-  }, [streaming])
-
   const submit = useCallback(() => {
     if (!ready) return
     onSubmit(value.trim())
@@ -99,8 +92,7 @@ export function Composer({
 
   return (
     <div
-      className={cn('shrink-0 px-3', className)}
-      style={docked ? { paddingBottom: 'calc(var(--kb-offset) + 10px)' } : undefined}
+      className={cn('shrink-0 px-3', docked && 'pb-2.5', className)}
     >
       {leading}
 

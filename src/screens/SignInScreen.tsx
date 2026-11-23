@@ -19,8 +19,8 @@ export function SignInScreen() {
   }
 
   return (
-    <div className="flex h-full flex-col justify-center px-6">
-      <form onSubmit={submit} className="mx-auto w-full max-w-[380px]">
+    <div className="scroll-pane flex h-full flex-col px-6 py-5">
+      <form onSubmit={submit} className="m-auto w-full max-w-[380px] shrink-0">
         <div
           aria-hidden="true"
           className={cn(

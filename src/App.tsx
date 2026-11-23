@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { Activity, useCallback, useRef, useState } from 'react'
 import { ChatScreen } from '@/screens/ChatScreen'
 import { HistoryScreen } from '@/screens/HistoryScreen'
 import { HomeScreen } from '@/screens/HomeScreen'
@@ -66,7 +66,7 @@ export function App() {
 
   if (status === 'checking') {
     return (
-      <div className="app-frame grid place-items-center bg-canvas">
+      <div className="app-frame grid place-items-center">
         <div className="flex items-center gap-2 text-[14px] text-quiet">
           <span className="size-3.5 animate-spin rounded-full border-2 border-(--separator-strong) border-t-brand" />
           正在确认会话
@@ -77,8 +77,8 @@ export function App() {
 
   if (status === 'unauthenticated') {
     return (
-      <div className="app-frame bg-canvas">
-        <div className="app-panel mx-auto max-w-[420px]">
+      <div className="app-frame">
+        <div className="app-panel">
           <SignInScreen />
         </div>
       </div>
@@ -86,15 +86,12 @@ export function App() {
   }
 
   return (
-    <div className="app-frame bg-canvas">
-      {/* One rounded panel holding the whole app, inset from the window. The
-          sidebar and screens live inside it so every surface shares the same
-          corner radius and the canvas only appears in the gap around it. */}
-      <div className="app-panel mx-auto flex max-w-[1100px]">
+    <div className="app-frame">
+      <div className="app-panel flex">
         <Sidebar route={route} onNavigate={setRoute} onHistory={() => setRoute('history')} />
 
         <main className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-          {route === 'home' ? (
+          <Activity mode={route === 'home' ? 'visible' : 'hidden'}>
             <HomeScreen
               onOpenHistory={() => setRoute('history')}
               onOpenSettings={() => setRoute('settings')}
@@ -104,17 +101,20 @@ export function App() {
               onOpenScope={() => setScope(true)}
               onSent={() => setRoute('chat')}
             />
-          ) : null}
+          </Activity>
 
-          {route === 'chat' && activeId ? (
-            <ChatScreen
-              onBack={() => setRoute('home')}
-              onOpenOptions={() => setOptions(true)}
-              onOpenModels={() => setModels(true)}
-              onOpenScope={() => setScope(true)}
-              onUpload={file => void upload(file)}
-              uploading={uploading}
-            />
+          {activeId ? (
+            <Activity mode={route === 'chat' ? 'visible' : 'hidden'}>
+              <ChatScreen
+                key={activeId}
+                onBack={() => setRoute('home')}
+                onOpenOptions={() => setOptions(true)}
+                onOpenModels={() => setModels(true)}
+                onOpenScope={() => setScope(true)}
+                onUpload={file => void upload(file)}
+                uploading={uploading}
+              />
+            </Activity>
           ) : null}
 
           {route === 'chat' && !activeId ? (
