@@ -7,7 +7,7 @@ import { getBook } from '@/lib/store'
 import { cn } from '@/lib/cn'
 import { REASONING_LABELS } from '@/lib/api'
 
-const outputPresets = [1024, 4096, 8192, 16384, 32768, 65536]
+const outputPresets = [1024, 4096, 8192, 16384, 32768, 65536, 130000]
 
 export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { active, models, model, setModel, modelStatus, refreshModels, settings, updateSettings } = useLumen()
@@ -15,7 +15,7 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
   const searchable = models.length > 8
   const selected = models.find(item => item.id === active?.model) ?? models.find(item => item.id === model) ?? models[0]
   const selectedEffort = selected?.reasoningOptions.find(level => level === settings.reasoningByModel?.[selected.id])
-  const output = settings.outputTokenLimit === 'max' && !selected?.outputTokens ? '' : settings.outputTokenLimit ?? ''
+  const output = settings.outputTokenLimit === 'max' && !selected?.outputTokens ? 'auto' : settings.outputTokenLimit
   const selectClass = 'min-h-10 max-w-[56%] rounded-md bg-field px-2 text-[16px] text-ink'
 
   const visible = useMemo(() => {
@@ -71,10 +71,10 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
                 value={output}
                 onChange={event => {
                   const value = event.target.value
-                  updateSettings({ outputTokenLimit: !value ? null : value === 'max' ? value : Number(value) })
+                  updateSettings({ outputTokenLimit: value === 'auto' || value === 'max' ? value : Number(value) })
                 }}
               >
-                <option value="">自动</option>
+                <option value="auto">自动</option>
                 {outputPresets.map(limit => (
                   <option key={limit} value={limit}>{`${limit.toLocaleString()} tokens`}</option>
                 ))}
@@ -204,8 +204,18 @@ export function ScopeSheet({ open, onClose }: { open: boolean; onClose: () => vo
           <p className="truncate text-[15px] font-medium">{book.title}</p>
           <p className="mt-0.5 text-[13px] text-quiet">
             {stored?.chapters.length ?? book.chapterCount} 章
-            {book.unreadable ? ` · ${book.unreadable} 节未提取正文` : ''}
+            {book.unreadable ? ` · ${book.unreadable} 处未提取正文` : ''}
           </p>
+          {book.missingSections?.length ? (
+            <details className="mt-1 text-[13px] text-quiet">
+              <summary className="cursor-pointer py-1">查看未提取的位置</summary>
+              <ul className="max-h-28 space-y-1 overflow-auto py-1">
+                {book.missingSections.map((section, index) => (
+                  <li key={`${section}-${index}`} className="break-all">{section}</li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
         </div>
 
         {(stored?.chapters.length ?? 0) > 8 ? (

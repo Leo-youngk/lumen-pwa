@@ -24,8 +24,21 @@ test('EPUB returns complete Markdown chapters in spine order', async () => {
   const epub = zipSync(Object.fromEntries(Object.entries({
     mimetype: 'application/epub+zip',
     'META-INF/container.xml': '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>',
-    'book.opf': '<package><metadata><title>Fixture</title></metadata><manifest><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>',
-    'one.xhtml': '<html><body><h1>第一章</h1><p>首章线索</p></body></html>',
+    'book.opf': `<package>
+      <metadata><title>Fixture</title></metadata>
+      <manifest>
+        <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+        <item id="one" href="one.xml" media-type="application/xhtml+xml"/>
+        <item id="svg" href="text.svg" media-type="image/svg+xml"/>
+        <item id="image" href="image.xhtml" media-type="application/xhtml+xml"/>
+        <item id="two" href="two.xhtml" media-type="application/xhtml+xml"/>
+      </manifest>
+      <spine><itemref idref="cover"/><itemref idref="one"/><itemref idref="svg"/><itemref idref="image"/><itemref idref="two" linear="no"/></spine>
+    </package>`,
+    'cover.xhtml': '<html><body epub:type="cover"><svg><image href="cover.png"/></svg></body></html>',
+    'one.xml': '<html><body><h1>第一章</h1><p>首章<span aria-hidden="true">可见</span>线索</p><pre>甲\n\n\n乙</pre></body></html>',
+    'text.svg': '<svg xmlns="http://www.w3.org/2000/svg"><text>图中可提取的正文</text></svg>',
+    'image.xhtml': '<html><body><img src="scan.jpg" alt="扫描页"/></body></html>',
     'two.xhtml': '<html><body><h1>第二章</h1><p>全书末尾线索</p></body></html>',
   }).map(([path, data]) => [path, strToU8(data)])))
   const response = await worker.fetch(new Request(origin + '/api/epub', {
@@ -35,8 +48,27 @@ test('EPUB returns complete Markdown chapters in spine order', async () => {
   }), env)
   assert.equal(response.status, 200)
   const book = await response.json()
-  assert.deepEqual(book.chapters.map(chapter => chapter.title), ['第一章', '第二章'])
-  assert.match(book.chapters[1].text, /全书末尾线索/)
+  assert.deepEqual(book.missingSections, ['image.xhtml'])
+  assert.deepEqual(book.chapters.map(chapter => chapter.source), ['one.xml', 'text.svg', 'image.xhtml', 'two.xhtml'])
+  assert.match(book.chapters[0].text, /首章可见线索/)
+  assert.match(book.chapters[0].text, /甲\n\n\n乙/)
+  assert.match(book.chapters[1].text, /图中可提取的正文/)
+  assert.match(book.chapters[2].text, /扫描页/)
+  assert.match(book.chapters[3].text, /全书末尾线索/)
+})
+
+test('a long text book fits a large model without the legacy source cap', async () => {
+  const chapters = ['OPENING', 'MIDDLE', 'ENDING'].map(title => ({
+    title, text: title + '\n' + 'unabridged text. '.repeat(12_000) + '\n' + title,
+  }))
+  const result = await bookContext({
+    meta: { title: 'Long book' }, chapters, question: 'Read the whole book', history: '',
+    knownContext: 1_000_000, maxOutput: 130_000,
+    signal: new AbortController().signal,
+    callModel: async () => assert.fail('The full book fits in one request'),
+  })
+  for (const chapter of chapters) assert.ok(result.system.includes(chapter.text))
+  assert.doesNotMatch(result.system, /注明原始章号/)
 })
 
 test('whole-book analysis sends the start and end of long books, and single-chapter analysis stays scoped', async () => {
@@ -70,6 +102,29 @@ test('whole-book analysis sends the start and end of long books, and single-chap
   assert.match(selected.system, /中篇标记/)
   assert.doesNotMatch(selected.system, /首章标记|终章标记/)
   assert.equal(batches.length, 0)
+})
+
+test('a truncated reading batch is split and every part is processed before synthesis', async () => {
+  const chunks = Array.from({ length: 30 }, (_, index) => `line-${index}: ${'details '.repeat(32)}\n`)
+  const seen = new Set()
+  let retries = 0
+  const result = await bookContext({
+    meta: { title: 'Long chapter' }, chapters: [{ title: 'Chapter A', text: chunks.join('') }],
+    question: 'Read everything', history: 'h'.repeat(6400), knownContext: 16_384, maxOutput: 2_048,
+    signal: new AbortController().signal,
+    callModel: async (_question, { system }) => {
+      const text = system.slice(system.indexOf('\n\n') + 2)
+      if (text.length > 5000) {
+        retries += 1
+        throw Object.assign(new Error('Output limit'), { code: 'output_limit' })
+      }
+      for (const chunk of chunks) if (text.includes(chunk)) seen.add(chunk)
+      return text.includes('line-29:') ? 'Final line covered.' : 'Batch covered.'
+    },
+  })
+  assert.equal(retries, 1)
+  assert.equal(seen.size, chunks.length)
+  assert.match(result.system, /Final line covered/)
 })
 
 test('Worker distinguishes successful completion from EOF after partial text and retains usage', async t => {
@@ -109,6 +164,14 @@ test('Worker distinguishes successful completion from EOF after partial text and
   assert.equal(calls[0].url, 'https://models.example.com/v1/chat/completions')
   assert.equal(calls[0].headers['x-opencode-session'], undefined)
   assert.match(calls[0].body.messages[0].content, /全书末尾线索/)
+  const truncated = await chat(partial + 'data: {"choices":[{"finish_reason":"length"}]}\n\n')
+  assert.equal(truncated.find(event => event.type === 'error').code, 'output_limit')
+
+  const oversized = await worker.fetch(new Request(origin + '/api/chat', {
+    method: 'POST', headers,
+    body: JSON.stringify({ system: 'X'.repeat(2_000_001), messages: [{ role: 'user', content: 'Read' }] }),
+  }), env)
+  assert.equal(oversized.status, 413)
 })
 
 test('Go uses the current catalog for saved legacy addresses and reports authentication and permission errors', async t => {

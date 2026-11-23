@@ -12,6 +12,15 @@ import { goBaseUrl, isOpenCodeGo, providerRoute, providerReasoningParams, provid
 
 """ + worker
 replace('var DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";', 'var DEFAULT_BASE_URL = goBaseUrl;')
+replace('  const messages = normalizeMessages(payload.messages);', '''  const latestUser = Array.isArray(payload.messages) && payload.messages.findLast(message =>
+    message?.role === "user" && typeof message.content === "string"
+  );
+  if (latestUser && latestUser.content.length > MAX_CONTENT_LENGTH) {
+    return json({ error: "这条消息（含选中的引用）过长，请缩短后重试。" }, 413);
+  }
+  const messages = normalizeMessages(payload.messages);''')
+replace('  const system = typeof payload.system === "string" && payload.system.trim() ? payload.system.slice(0, MAX_SYSTEM_LENGTH) : "";', '''  const system = typeof payload.system === "string" ? payload.system : "";
+  if (system.length > MAX_SYSTEM_LENGTH) return json({ error: "原文请求过大，无法完整发送。" }, 413);''')
 replace('  if (!client) return { baseUrl: fallback, source: "server", error: null };',
 '''  if (!client) return { baseUrl: fallback, source: "server", error: null };
   if (!request.headers.get("X-Api-Key")?.trim() && client.replace(/\\/+$/, "") !== fallback) {
@@ -55,7 +64,10 @@ replace('      body: upstreamBody,\n      signal: upstreamController.signal\n   
 replace('    let eventCount = 0;', '    let eventCount = 0;\n    let usage = null;')
 replace('          const text = deltaText(parsed);',
 '''          usage = parseProviderUsage(parsed, usage);
-          if (parsed.type === "response.failed" || parsed.type === "response.incomplete") {
+          if (parsed.type === "response.incomplete" && parsed.response?.incomplete_details?.reason === "max_output_tokens") {
+            truncated = true;
+            completed = true;
+          } else if (parsed.type === "response.failed" || parsed.type === "response.incomplete") {
             throw new Error(parsed.response?.error?.message || "模型没有完成整条回答。");
           }
           const text = parsed.type === "response.output_text.delta" ? parsed.delta : deltaText(parsed);''')
@@ -68,7 +80,7 @@ replace(', dataPreview: data.slice(0, 300)','')
 replace('      if (failure) await writer.write(sse({ type: "error", error: failure }));',
 '''      const reported = usageEvent(usage);
       if (reported) await writer.write(sse(reported));
-      if (failure) await writer.write(sse({ type: "error", error: failure }));''')
+      if (failure) await writer.write(sse({ type: "error", error: failure, code: truncated ? "output_limit" : void 0 }));''')
 replace('fetch(`${baseUrl}/models`,', 'fetch(providerModelsUrl(baseUrl),')
 replace('      if (url.pathname === "/api/chat" && request.method === "POST") return handleChat(request, env);',
 '''      if (url.pathname === "/api/epub" && request.method === "POST") return handleEpub(request);

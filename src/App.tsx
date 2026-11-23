@@ -7,8 +7,9 @@ import { SettingsScreen } from '@/screens/SettingsScreen'
 import { SignInScreen } from '@/screens/SignInScreen'
 import { Sheet } from '@/components/Sheet'
 import { List, Row } from '@/components/List'
+import { Icon } from '@/components/Icon'
 import { LumenClient } from '@/lib/api'
-import { newId, putBook, type BookRecord } from '@/lib/store'
+import { isPinned, newId, putBook, sortConversations, type BookRecord } from '@/lib/store'
 import { useLumen } from '@/state/LumenContext'
 import { useTheme, useViewport } from '@/lib/viewport'
 import { useServiceWorker } from '@/lib/useServiceWorker'
@@ -17,9 +18,13 @@ import { cn } from '@/lib/cn'
 type Route = 'home' | 'chat' | 'history' | 'settings'
 
 export function App() {
-  const { status, settings, activeId, streaming, openConversation, startConversation, clearAll, deleteConversation } =
-    useLumen()
+  const {
+    status, settings, active, activeId, streaming, openConversation, startConversation,
+    updateConversation, togglePin, clearAll, deleteConversation,
+  } = useLumen()
   const [route, setRoute] = useState<Route>('home')
+  const [homeKey, setHomeKey] = useState(0)
+  const navigationRevision = useRef(0)
   const [models, setModels] = useState(false)
   const [scope, setScope] = useState(false)
   const [options, setOptions] = useState(false)
@@ -31,13 +36,25 @@ export function App() {
   useTheme(settings.theme)
   useServiceWorker()
 
-  const openChat = useCallback((id: string) => {
-    openConversation(id)
-    setRoute('chat')
+  const navigate = useCallback((next: Route) => {
+    navigationRevision.current += 1
+    if (next === 'home') openConversation(null)
+    setRoute(next)
   }, [openConversation])
 
-  const upload = useCallback(async (file: File) => {
+  const newConversation = useCallback(() => {
+    setHomeKey(key => key + 1)
+    navigate('home')
+  }, [navigate])
+
+  const openChat = useCallback((id: string) => {
+    openConversation(id)
+    navigate('chat')
+  }, [navigate, openConversation])
+
+  const upload = useCallback(async (file: File, targetId: string | null) => {
     if (uploadInFlight.current || streaming) return
+    const revision = navigationRevision.current
     uploadInFlight.current = true
     setUploading(true)
     setUploadError('')
@@ -51,18 +68,24 @@ export function App() {
         chapterCount: result.chapters.length,
         charCount: result.charCount,
         unreadable: result.unreadable,
+        missingSections: result.missingSections,
         focusChapter: null,
       }
       await putBook(book, result.chapters)
-      startConversation({ title: book.title, book })
-      setRoute('chat')
+      if (targetId) {
+        updateConversation(targetId, { book })
+      } else {
+        const stillOnHome = revision === navigationRevision.current
+        startConversation({ title: book.title, book }, stillOnHome)
+        if (stillOnHome) navigate('chat')
+      }
     } catch (failure) {
       setUploadError(failure instanceof Error ? failure.message : 'EPUB 解析失败。')
     } finally {
       uploadInFlight.current = false
       setUploading(false)
     }
-  }, [startConversation, streaming])
+  }, [navigate, startConversation, streaming, updateConversation])
 
   if (status === 'checking') {
     return (
@@ -88,18 +111,18 @@ export function App() {
   return (
     <div className="app-frame">
       <div className="app-panel flex">
-        <Sidebar route={route} onNavigate={setRoute} onHistory={() => setRoute('history')} />
+        <Sidebar route={route} onNavigate={navigate} onOpen={openChat} onNew={newConversation} />
 
         <main className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
           <Activity mode={route === 'home' ? 'visible' : 'hidden'}>
             <HomeScreen
-              onOpenHistory={() => setRoute('history')}
-              onOpenSettings={() => setRoute('settings')}
+              key={homeKey}
+              onOpenHistory={() => navigate('history')}
+              onOpenSettings={() => navigate('settings')}
               onOpenModels={() => setModels(true)}
-              onUpload={file => void upload(file)}
+              onUpload={file => void upload(file, null)}
               uploading={uploading}
-              onOpenScope={() => setScope(true)}
-              onSent={() => setRoute('chat')}
+              onSent={() => navigate('chat')}
             />
           </Activity>
 
@@ -107,11 +130,11 @@ export function App() {
             <Activity mode={route === 'chat' ? 'visible' : 'hidden'}>
               <ChatScreen
                 key={activeId}
-                onBack={() => setRoute('home')}
+                onBack={() => navigate('home')}
                 onOpenOptions={() => setOptions(true)}
                 onOpenModels={() => setModels(true)}
                 onOpenScope={() => setScope(true)}
-                onUpload={file => void upload(file)}
+                onUpload={file => void upload(file, activeId)}
                 uploading={uploading}
               />
             </Activity>
@@ -123,7 +146,7 @@ export function App() {
                 <p className="text-[16px] font-medium">还没有选择对话</p>
                 <button
                   type="button"
-                  onClick={() => setRoute('home')}
+                  onClick={() => navigate('home')}
                   className="mt-3 rounded-full bg-brand px-4 py-2 text-[15px] text-white active:opacity-80"
                 >
                   回到首页
@@ -133,11 +156,11 @@ export function App() {
           ) : null}
 
           {route === 'history' ? (
-            <HistoryScreen onBack={() => setRoute('home')} onOpen={openChat} />
+            <HistoryScreen onBack={() => navigate('home')} onNew={newConversation} onOpen={openChat} />
           ) : null}
 
           {route === 'settings' ? (
-            <SettingsScreen onBack={() => setRoute('home')} onOpenModels={() => setModels(true)} />
+            <SettingsScreen onBack={() => navigate('home')} onOpenModels={() => setModels(true)} />
           ) : null}
         </main>
       </div>
@@ -152,16 +175,25 @@ export function App() {
               icon="plus"
               label="新对话"
               onClick={() => {
-                startConversation()
-                setRoute('home')
+                newConversation()
                 setOptions(false)
               }}
             />
+            {active ? (
+              <Row
+                icon="pin"
+                label={isPinned(active) ? '取消置顶' : '置顶对话'}
+                onClick={() => {
+                  togglePin(active.id)
+                  setOptions(false)
+                }}
+              />
+            ) : null}
             <Row
               icon="settings"
               label="设置"
               onClick={() => {
-                setRoute('settings')
+                navigate('settings')
                 setOptions(false)
               }}
             />
@@ -171,7 +203,7 @@ export function App() {
               type="button"
               onClick={() => {
                 deleteConversation(activeId)
-                setRoute('home')
+                navigate('home')
                 setOptions(false)
               }}
               className="mx-4 mb-2 w-[calc(100%-2rem)] rounded-[14px] bg-surface py-3.5 text-center text-[17px] text-danger active:opacity-60"
@@ -183,7 +215,7 @@ export function App() {
             type="button"
             onClick={() => {
               clearAll()
-              setRoute('home')
+              navigate('home')
               setOptions(false)
             }}
             className="mx-4 w-[calc(100%-2rem)] py-2 text-center text-[13px] text-quiet active:opacity-50"
@@ -216,13 +248,15 @@ export function App() {
 function Sidebar({
   route,
   onNavigate,
-  onHistory,
+  onOpen,
+  onNew,
 }: {
   route: Route
   onNavigate: (route: Route) => void
-  onHistory: () => void
+  onOpen: (id: string) => void
+  onNew: () => void
 }) {
-  const { conversations, openConversation, startConversation, activeId } = useLumen()
+  const { conversations, activeId } = useLumen()
 
   return (
     <aside
@@ -237,10 +271,7 @@ function Sidebar({
       <div className="px-3">
         <button
           type="button"
-          onClick={() => {
-            startConversation()
-            onNavigate('home')
-          }}
+          onClick={onNew}
           className="flex h-9 w-full items-center justify-center gap-1.5 rounded-[9px] bg-surface text-[14px] font-medium hairline-t hairline-b active:opacity-70"
         >
           <span className="text-[17px] leading-none">+</span> 新对话
@@ -250,16 +281,13 @@ function Sidebar({
       <nav className="scroll-pane mt-4 min-h-0 flex-1 px-2">
         {conversations.length ? (
           <>
-            <p className="section-label mb-1.5 px-2 text-[11px]">最近对话</p>
-            {conversations.slice(0, 20).map(conversation => (
+            <p className="section-label mb-1.5 px-2 text-[11px]">对话</p>
+            {sortConversations(conversations).slice(0, 20).map(conversation => (
               <button
                 key={conversation.id}
                 type="button"
                 aria-current={conversation.id === activeId ? 'page' : undefined}
-                onClick={() => {
-                  openConversation(conversation.id)
-                  onNavigate('chat')
-                }}
+                onClick={() => onOpen(conversation.id)}
                 className={cn(
                   'flex h-8 w-full items-center gap-2 rounded-[7px] px-2 text-left text-[13.5px]',
                   conversation.id === activeId
@@ -267,6 +295,7 @@ function Sidebar({
                     : 'text-secondary hover:bg-(--separator)',
                 )}
               >
+                {isPinned(conversation) ? <Icon name="pin" size={13} className="shrink-0 text-brand-ink" /> : null}
                 <span className="truncate">{conversation.title}</span>
               </button>
             ))}
@@ -277,7 +306,7 @@ function Sidebar({
       </nav>
 
       <div className="border-t border-(--separator) p-2">
-        <SidebarLink active={route === 'history'} onClick={onHistory}>
+        <SidebarLink active={route === 'history'} onClick={() => onNavigate('history')}>
           全部对话
         </SidebarLink>
         <SidebarLink active={route === 'settings'} onClick={() => onNavigate('settings')}>

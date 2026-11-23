@@ -7,12 +7,13 @@ export interface ReadingProgress {
 }
 
 export function bookContext(options: {
-  meta: { title: string }
+  meta: { title: string; unreadable?: number; missingSections?: string[] }
   chapters: Chapter[]
   focus?: number | null
   question: string
   history: string
   knownContext?: number
+  modelOutput?: number
   maxOutput: number
   callModel: (question: string, options: { system: string; maxTokens: number }, signal: AbortSignal) => Promise<string>
   progress?: (value: ReadingProgress) => void

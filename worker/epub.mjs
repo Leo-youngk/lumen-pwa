@@ -4,7 +4,7 @@ import { SaxesParser } from 'saxes'
 
 const maxFileBytes = 16 * 1024 * 1024
 const maxXmlAndHtmlBytes = 14 * 1024 * 1024
-const maxMarkdownBytes = 4 * 1024 * 1024
+const maxMarkdownBytes = 8 * 1024 * 1024
 const encoder = new TextEncoder()
 
 function xml(source, visit, close) {
@@ -41,29 +41,48 @@ function zipPath(parent, path) {
   return parts.join('/')
 }
 
-const skip = new Set(['script', 'style', 'nav', 'template', 'svg', 'noscript'])
+const skip = new Set(['script', 'style', 'template', 'noscript', 'defs', 'metadata'])
 const escapeMarkdown = text => text.replace(/[\\`*_\[\]<>]/g, '\\$&')
 const childText = node => node.nodeName === '#text'
   ? node.value
   : (node.childNodes ?? []).map(childText).join('')
 const attr = (node, name) => node.attrs?.find(item => item.name === name)?.value
+const hasWord = text => /[^\p{White_Space}\p{P}\p{S}]/u.test(text)
+const hasProperty = (value, property) => value?.split(/\s+/).includes(property) ?? false
+const readableType = type => /^(application\/xhtml\+xml|text\/html|image\/svg\+xml)$/i.test(type ?? '')
 
 function chapterMarkdown(html) {
   const body = parseHtml(html).childNodes.find(node => node.tagName === 'html')
     ?.childNodes.find(node => node.tagName === 'body')
   let heading = ''
+  let hasText = false
+  let hasMedia = false
+  let cover = false
+  const codeBlocks = []
   function render(node, depth = 0, listType = '') {
     if (depth > 120) throw new Error('EPUB 章节的 HTML 嵌套过深。')
     const tag = node.tagName
-    if (skip.has(tag) || attr(node, 'hidden') !== undefined || attr(node, 'aria-hidden') === 'true') return ''
-    if (node.nodeName === '#text') return escapeMarkdown(node.value.replace(/\s+/g, ' '))
+    if (skip.has(tag) || attr(node, 'hidden') !== undefined) return ''
+    cover ||= hasProperty(attr(node, 'epub:type'), 'cover') || attr(node, 'role') === 'doc-cover'
+    if (node.nodeName === '#text') {
+      hasText ||= hasWord(node.value)
+      return escapeMarkdown(node.value.replace(/\s+/g, ' '))
+    }
     if (tag === 'br') return '\n'
     if (tag === 'hr') return '\n\n---\n\n'
-    if (tag === 'img') return attr(node, 'alt') ? `[图片：${escapeMarkdown(attr(node, 'alt'))}]` : ''
+    if (tag === 'img' || tag === 'image') {
+      hasMedia = true
+      const alt = attr(node, 'alt') || attr(node, 'aria-label')
+      return alt?.trim() ? `[图片：${escapeMarkdown(alt.trim())}]` : ''
+    }
+    hasMedia ||= tag === 'svg' || tag === 'object' || tag === 'video'
     if (tag === 'pre') {
       const text = childText(node).trimEnd()
-      const fence = '`'.repeat(Math.max(3, ...Array.from(text.matchAll(/`+/g), match => match[0].length + 1)))
-      return `\n\n${fence}\n${text}\n${fence}\n\n`
+      hasText ||= Boolean(text.trim())
+      let width = 3
+      for (const match of text.matchAll(/`+/g)) width = Math.max(width, match[0].length + 1)
+      const fence = '`'.repeat(width)
+      return `\n\n\0${codeBlocks.push(`${fence}\n${text}\n${fence}`) - 1}\0\n\n`
     }
     const children = node.childNodes ?? []
     if (tag === 'ul' || tag === 'ol') return `\n\n${children.map(child => render(child, depth + 1, tag)).join('').trim()}\n\n`
@@ -80,11 +99,13 @@ function chapterMarkdown(html) {
     if (tag === 'li') return `${listType === 'ol' ? '1.' : '-'} ${text.replace(/\n(?=\S)/g, '\n  ')}\n`
     if (tag === 'td' || tag === 'th') return `${text} | `
     if (tag === 'tr') return `${text}\n`
+    if (tag === 'text' || tag === 'title' || tag === 'desc') return `\n\n${text}\n\n`
     if (/^(p|div|section|article|header|footer|aside|figure|figcaption|table|dd|dt)$/.test(tag)) return `\n\n${text}\n\n`
     return raw
   }
-  const text = body ? render(body).replace(/\n[ \t]+\n/g, '\n\n').replace(/\n{3,}/g, '\n\n').trim() : ''
-  return { heading, text }
+  const text = body ? render(body).replace(/\n[ \t]+\n/g, '\n\n').replace(/\n{3,}/g, '\n\n').trim()
+    .replace(/\0(\d+)\0/g, (_, index) => codeBlocks[Number(index)]) : ''
+  return { heading, text, hasText, hasMedia, cover }
 }
 
 export async function convertEpub(request) {
@@ -114,8 +135,8 @@ export async function convertEpub(request) {
   }
   let expanded = 0
   const names = new Set()
-  const files = unzipSync(bytes, { filter: ({ name, originalSize }) => {
-    if (!/\.(xml|opf|x?html|htm|ncx)$/i.test(name)) return false
+  const extract = allow => unzipSync(bytes, { filter: ({ name, originalSize }) => {
+    if (!allow(name)) return false
     if (names.has(name)) throw new Error('EPUB 有重复的文件路径。')
     names.add(name)
     expanded += originalSize
@@ -123,66 +144,76 @@ export async function convertEpub(request) {
     return true
   } })
   const decoder = new TextDecoder('utf-8', { fatal: true })
-  const read = path => {
+  const read = (files, path) => {
     if (!Object.hasOwn(files, path)) throw new Error(`EPUB 缺少文件：${path}`)
     const data = files[path]
     if (data[0] === 0xfe && data[1] === 0xff) return new TextDecoder('utf-16be', { fatal: true }).decode(data)
     if (data[0] === 0xff && data[1] === 0xfe) return new TextDecoder('utf-16le', { fatal: true }).decode(data)
     return decoder.decode(data)
   }
+  const metadata = extract(name => name === 'META-INF/container.xml' || name === 'META-INF/encryption.xml')
   let packagePath = ''
-  xml(read('META-INF/container.xml'), (tag, a) => {
+  xml(read(metadata, 'META-INF/container.xml'), (tag, a) => {
     if (tag === 'rootfile' && !packagePath) packagePath = a['full-path']
   })
   if (!packagePath) throw new Error('EPUB 缺少书籍清单。')
-  if (Object.hasOwn(files, 'META-INF/encryption.xml')) {
+  if (Object.hasOwn(metadata, 'META-INF/encryption.xml')) {
     const names = []
-    xml(read('META-INF/encryption.xml'), (tag, a) => {
+    xml(read(metadata, 'META-INF/encryption.xml'), (tag, a) => {
       if (tag === 'CipherReference') names.push(zipPath('', a.URI))
     })
     if (names.some(name => !/\.(otf|ttf|woff2?)$/i.test(name))) throw new Error('这本 EPUB 的内容受加密保护，无法转换。')
   }
   const manifest = new Map()
   const spine = []
+  const coverPaths = new Set()
+  let coverId = ''
   let title = ''
   let author = ''
-  xml(read(packagePath), (tag, a) => {
+  xml(read(extract(name => name === packagePath), packagePath), (tag, a) => {
     if (tag === 'item') manifest.set(a.id, a)
     if (tag === 'itemref') spine.push(a)
+    if (tag === 'meta' && a.name === 'cover') coverId = a.content
+    if (tag === 'reference' && hasProperty(a.type, 'cover')) coverPaths.add(zipPath(packagePath, a.href))
   }, (tag, value) => {
     if (tag === 'title' && !title) title = value
     if (tag === 'creator' && !author) author = value
   })
-  const chapters = []
-  let charCount = 0
-  let markdownBytes = 0
-  let unreadable = 0
-  for (const item of spine) {
+  const sections = spine.map(item => {
     let entry = manifest.get(item.idref)
-    if (!entry) throw new Error('EPUB 的阅读顺序引用了缺失的章节。')
     const seen = new Set()
-    while (entry?.fallback && !/html/i.test(entry['media-type']) && !seen.has(entry.id)) {
+    while (entry?.fallback && !readableType(entry['media-type']) && !seen.has(entry.id)) {
       seen.add(entry.id)
       entry = manifest.get(entry.fallback)
     }
-    if (!entry || !/html/i.test(entry['media-type'])) {
-      if (item.linear !== 'no') unreadable += 1
+    const path = entry ? zipPath(packagePath, entry.href) : ''
+    const cover = entry?.id === coverId || coverPaths.has(path) || hasProperty(entry?.properties, 'cover-image')
+    const primary = item.linear !== 'no' && !hasProperty(entry?.properties, 'nav')
+    return { path, primary, cover, readable: Boolean(path && readableType(entry?.['media-type'])), label: path || item.idref }
+  })
+  const paths = new Set(sections.filter(section => section.readable).map(section => section.path))
+  const documents = extract(name => paths.has(name))
+  const chapters = []
+  const missingSections = []
+  let charCount = 0
+  let markdownBytes = 0
+  for (const section of sections) {
+    const { path, label, primary } = section
+    if (!section.readable || !Object.hasOwn(documents, path)) {
+      if (primary && !section.cover) missingSections.push(label)
       continue
     }
-    const path = zipPath(packagePath, entry.href)
-    if (!path) throw new Error('EPUB 包含无法本地读取的章节。')
-    const { heading, text } = chapterMarkdown(read(path))
-    if (!text) {
-      if (item.linear !== 'no' && !entry.properties?.split(/\s+/).includes('nav')) unreadable += 1
-      continue
-    }
+    const { heading, text, hasText, hasMedia, cover } = chapterMarkdown(read(documents, path))
+    if (!hasText && (cover || section.cover)) continue
+    if (primary && hasMedia && !hasText) missingSections.push(label)
+    if (!text) continue
     charCount += text.length
     markdownBytes += encoder.encode(text).byteLength
-    if (markdownBytes > maxMarkdownBytes) return { status: 413, error: '转换后的 Markdown 超过 4 MB。' }
-    chapters.push({ title: heading || `第 ${chapters.length + 1} 节`, text })
+    if (markdownBytes > maxMarkdownBytes) return { status: 413, error: '转换后的 Markdown 超过 8 MB。' }
+    chapters.push({ title: heading || `第 ${chapters.length + 1} 节`, text, source: path })
   }
   if (!chapters.length) throw new Error('没有读到文字正文。这本书可能是图片版。')
-  return { title, author, charCount, unreadable, chapterCount: chapters.length, chapters }
+  return { title, author, charCount, unreadable: missingSections.length, missingSections, chapterCount: chapters.length, chapters }
 }
 
 export async function handleEpub(request) {

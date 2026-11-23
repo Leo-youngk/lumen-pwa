@@ -230,9 +230,16 @@ async function handleChat(request, env) {
   } catch {
     return json({ error: "\u8BF7\u6C42\u4F53\u4E0D\u662F\u6709\u6548 JSON\u3002" }, 400);
   }
+  const latestUser = Array.isArray(payload.messages) && payload.messages.findLast(message =>
+    message?.role === "user" && typeof message.content === "string"
+  );
+  if (latestUser && latestUser.content.length > MAX_CONTENT_LENGTH) {
+    return json({ error: "这条消息（含选中的引用）过长，请缩短后重试。" }, 413);
+  }
   const messages = normalizeMessages(payload.messages);
   if (!messages) return json({ error: "\u81F3\u5C11\u9700\u8981\u4E00\u6761\u6709\u6548\u7684 user \u6216 assistant \u6D88\u606F\u3002" }, 400);
-  const system = typeof payload.system === "string" && payload.system.trim() ? payload.system.slice(0, MAX_SYSTEM_LENGTH) : "";
+  const system = typeof payload.system === "string" ? payload.system : "";
+  if (system.length > MAX_SYSTEM_LENGTH) return json({ error: "原文请求过大，无法完整发送。" }, 413);
   const { baseUrl, source: baseUrlSource, error: baseUrlError } = upstreamBaseUrl(request, env);
   if (baseUrlError) {
     diag("chat.bad-base-url", { error: baseUrlError });
@@ -427,7 +434,10 @@ async function handleChat(request, env) {
             truncated ||= reason === "length";
           }
           usage = parseProviderUsage(parsed, usage);
-          if (parsed.type === "response.failed" || parsed.type === "response.incomplete") {
+          if (parsed.type === "response.incomplete" && parsed.response?.incomplete_details?.reason === "max_output_tokens") {
+            truncated = true;
+            completed = true;
+          } else if (parsed.type === "response.failed" || parsed.type === "response.incomplete") {
             throw new Error(parsed.response?.error?.message || "模型没有完成整条回答。");
           }
           const text = parsed.type === "response.output_text.delta" ? parsed.delta : deltaText(parsed);
@@ -469,7 +479,7 @@ async function handleChat(request, env) {
     try {
       const reported = usageEvent(usage);
       if (reported) await writer.write(sse(reported));
-      if (failure) await writer.write(sse({ type: "error", error: failure }));
+      if (failure) await writer.write(sse({ type: "error", error: failure, code: truncated ? "output_limit" : void 0 }));
       await writer.write(sse({ type: "done" }));
       await writer.close();
     } catch {

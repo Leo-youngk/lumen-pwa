@@ -1,11 +1,16 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Composer } from '@/components/Composer'
 import { Icon, IconButton } from '@/components/Icon'
 import { AssistantBubble, UserBubble } from '@/components/Message'
 import { NavigationBar } from '@/components/NavigationBar'
 import { useLumen } from '@/state/LumenContext'
 import { cn } from '@/lib/cn'
-import { BookRow, ModelPill } from './HomeScreen'
+import { ModelPill } from './HomeScreen'
+
+function answerContainer(node: Node | null) {
+  const element = node instanceof Element ? node : node?.parentElement
+  return element?.closest('[data-assistant-answer]')
+}
 
 export interface ChatScreenProps {
   onBack: () => void
@@ -42,6 +47,9 @@ export function ChatScreen({
   } = useLumen()
 
   const [draft, setDraft] = useState('')
+  const [selection, setSelection] = useState('')
+  const [quote, setQuote] = useState('')
+  const input = useRef<HTMLTextAreaElement>(null)
   const feed = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [belowFold, setBelowFold] = useState(false)
@@ -50,7 +58,7 @@ export function ChatScreen({
   const last = messages.at(-1)
   const generating = streamingId === active?.id
   const progressLabel = readingProgress?.stage === 'direct'
-    ? '正在使用所选范围的完整原文…'
+    ? '正在发送所选范围内的全部正文…'
     : readingProgress?.stage === 'read'
       ? `已读原文 ${readingProgress.done}/${readingProgress.total} 批`
       : readingProgress
@@ -63,6 +71,28 @@ export function ChatScreen({
     const node = feed.current
     if (node && stick.current) node.scrollTop = node.scrollHeight
   }, [messages.length, last?.content, last?.reasoning, error, progressLabel])
+
+  useEffect(() => {
+    let clearTimer: number | undefined
+    function onSelectionChange() {
+      window.clearTimeout(clearTimer)
+      const current = window.getSelection()
+      const answer = answerContainer(current?.anchorNode ?? null)
+      const valid = current && !current.isCollapsed && answer && feed.current?.contains(answer)
+        && answer === answerContainer(current.focusNode)
+      if (valid) {
+        setSelection(current.toString().trim())
+      } else {
+        // A touch can dismiss the selection immediately before dispatching its click.
+        clearTimer = window.setTimeout(() => setSelection(''), 200)
+      }
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => {
+      document.removeEventListener('selectionchange', onSelectionChange)
+      window.clearTimeout(clearTimer)
+    }
+  }, [])
 
   const onScroll = useCallback(() => {
     const node = feed.current
@@ -101,12 +131,6 @@ export function ChatScreen({
           style={{ paddingTop: 'var(--nav-height)' }}
         >
           <div className={cn('mx-auto w-full max-w-[680px] pt-2', settings.compactMode ? 'pb-2' : 'pb-4')}>
-            {active.book ? (
-              <div className="px-4 pt-1">
-                <BookRow book={active.book} onClick={onOpenScope} />
-              </div>
-            ) : null}
-
             {messages.map((message, index) =>
               message.role === 'user' ? (
                 <UserBubble key={message.id} message={message} />
@@ -168,19 +192,72 @@ export function ChatScreen({
       </div>
 
       <Composer
+        inputRef={input}
         value={draft}
         onChange={setDraft}
         onSubmit={text => {
           setDraft('')
-          void send(text)
+          setQuote('')
+          void send(text, quote || undefined)
         }}
         onStop={stop}
         streaming={generating}
         disabled={uploading || (streaming && !generating)}
-        leading={uploading ? <p role="status" className="px-2 pb-1 text-[13px] text-quiet">正在把 EPUB 转为 Markdown…</p> : undefined}
+        className="mx-auto w-full max-w-[680px]"
+        leading={selection ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-start px-4 pb-2">
+            <button
+              type="button"
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => {
+                setQuote(selection)
+                setSelection('')
+                window.getSelection()?.removeAllRanges()
+                input.current?.focus()
+              }}
+              className="pointer-events-auto inline-flex min-h-10 items-center gap-1.5 rounded-full border border-(--separator) bg-surface px-3 text-[14px] font-medium text-brand-ink shadow-lg active:scale-95"
+            >
+              <Icon name="quote" size={15} />
+              引用追问
+            </button>
+          </div>
+        ) : undefined}
+        context={active.book || quote ? (
+          <div className="min-w-0 space-y-1 pb-0.5">
+            {active.book ? (
+              <button
+                type="button"
+                onClick={onOpenScope}
+                aria-label="阅读范围"
+                className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-lg bg-field px-2 text-left text-[12.5px] text-secondary active:opacity-60"
+              >
+                <Icon name="book" size={15} className="shrink-0" />
+                <span className="min-w-0 truncate">{active.book.title}</span>
+                {active.book.focusChapter != null ? (
+                  <span className="shrink-0 text-quiet">第 {active.book.focusChapter + 1} 章</span>
+                ) : null}
+                <Icon name="down" size={11} className="shrink-0" />
+              </button>
+            ) : null}
+            {quote ? (
+              <div className="flex min-w-0 items-center gap-1.5 rounded-lg bg-field pl-2 text-[13px] text-secondary">
+                <Icon name="quote" size={15} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate" aria-label="已引用的回答片段">{quote}</span>
+                <button
+                  type="button"
+                  aria-label="移除引用"
+                  onClick={() => setQuote('')}
+                  className="grid size-9 shrink-0 place-items-center rounded-lg text-quiet active:opacity-50"
+                >
+                  <Icon name="close" size={15} />
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : undefined}
         onAttach={onUpload}
         enterToSend={settings.enterToSend}
-        placeholder={streaming ? '正在生成回答…' : '继续追问…'}
+        placeholder={uploading ? '正在转换 EPUB…' : generating ? '正在生成回答…' : active.book && !messages.length ? '向这本书提问…' : '继续追问…'}
         trailing={
           <>
             <span className="text-[11px] tabular-nums text-quiet" title={`本设备已记录 ${usage.total.toLocaleString()} tokens，${usage.unreported} 次请求无用量回报`}>

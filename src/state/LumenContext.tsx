@@ -8,12 +8,13 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { ApiError, LumenClient, type ModelOption } from '@/lib/api'
+import { LumenClient, type ModelOption } from '@/lib/api'
 import { bookContext, type ReadingProgress } from '../../client/features.js'
 import {
   DEFAULT_SETTINGS,
   KEYS,
   getBook,
+  isPinned,
   loadConversations,
   loadModel,
   loadSettings,
@@ -56,11 +57,11 @@ interface LumenContextValue {
   conversations: Conversation[]
   activeId: string | null
   active: Conversation | null
-  openConversation: (id: string) => void
-  startConversation: (seed?: Partial<Conversation>) => string
+  openConversation: (id: string | null) => void
+  startConversation: (seed: Partial<Conversation>, open: boolean) => void
   updateConversation: (id: string, patch: Partial<Conversation>) => void
   deleteConversation: (id: string) => void
-  toggleStar: (id: string) => void
+  togglePin: (id: string) => void
   clearAll: () => void
 
   streaming: boolean
@@ -68,7 +69,7 @@ interface LumenContextValue {
   readingProgress: ReadingProgress | null
   error: string | null
   clearError: () => void
-  send: (text: string) => Promise<void>
+  send: (text: string, quote?: string) => Promise<void>
   stop: () => void
   retry: () => Promise<void>
 
@@ -119,6 +120,11 @@ function deriveTitle(text: string): string {
   return clean.length > 28 ? `${clean.slice(0, 28)}…` : clean
 }
 
+function modelContent(message: Message): string {
+  if (!message.quote) return message.content
+  return `我选中的上一条回答片段：\n${message.quote}\n\n我的追问：\n${message.content}`
+}
+
 export function LumenProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('checking')
   const [settings, setSettings] = useState<Settings>(loadSettings)
@@ -132,7 +138,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const [streaming, setStreaming] = useState(false)
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [readingProgress, setReadingProgress] = useState<ReadingProgress | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ id: string; message: string } | null>(null)
   const [usage, setUsage] = useState<UsageState>(loadUsage)
   const [syncCode, setSyncCodeState] = useState<string>(loadSyncCode)
 
@@ -273,18 +279,17 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     [conversations, activeId],
   )
 
-  const openConversation = useCallback((id: string) => {
+  const openConversation = useCallback((id: string | null) => {
+    activeIdRef.current = id
     setActiveId(id)
     setError(null)
   }, [])
 
-  const startConversation = useCallback((seed?: Partial<Conversation>) => {
+  const startConversation = useCallback((seed: Partial<Conversation>, open: boolean) => {
     const conversation = makeConversation(seed, modelRef.current)
     setConversations(current => [conversation, ...current])
-    setActiveId(conversation.id)
-    setError(null)
-    return conversation.id
-  }, [])
+    if (open) openConversation(conversation.id)
+  }, [openConversation])
 
   const updateConversation = useCallback((id: string, patch: Partial<Conversation>) => {
     setConversations(current =>
@@ -295,20 +300,20 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const deleteConversation = useCallback((id: string) => {
     if (streamingId === id) abortRef.current?.abort()
     setConversations(current => current.filter(item => item.id !== id))
-    if (activeIdRef.current === id) setActiveId(null)
-  }, [streamingId])
+    if (activeIdRef.current === id) openConversation(null)
+  }, [openConversation, streamingId])
 
-  const toggleStar = useCallback((id: string) => {
+  const togglePin = useCallback((id: string) => {
     setConversations(current =>
-      current.map(item => (item.id === id ? { ...item, starred: !item.starred } : item)),
+      current.map(item => (item.id === id ? { ...item, pinned: !isPinned(item) } : item)),
     )
   }, [])
 
   const clearAll = useCallback(() => {
     abortRef.current?.abort()
     setConversations([])
-    setActiveId(null)
-  }, [])
+    openConversation(null)
+  }, [openConversation])
 
   /* --------------------------------------------------------------- stream */
 
@@ -344,9 +349,10 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       const config = providerHeaders(currentSettings)
       const savedEffort = currentSettings.reasoningByModel?.[selectedId]
       const effort = selectedModel?.reasoningOptions.find(option => option === savedEffort)
+      const readingEffort = selectedModel?.reasoningOptions.find(option => option === 'none')
       const requestedOutput = currentSettings.outputTokenLimit === 'max'
         ? selectedModel?.outputTokens
-        : currentSettings.outputTokenLimit ?? undefined
+        : currentSettings.outputTokenLimit === 'auto' ? undefined : currentSettings.outputTokenLimit
       const requestClient = new LumenClient('', { headers: () => config })
       const controller = new AbortController()
       abortRef.current = controller
@@ -392,7 +398,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           await requestClient.chat({
             ...body, model: selectedId, session_id: conversationId,
             provider_protocol: selectedModel?.protocol,
-            reasoning_effort: streamAnswer ? effort : undefined,
+            reasoning_effort: streamAnswer ? effort : readingEffort,
           }, event => {
             if (event.type === 'usage') {
               const input = event.input ?? 0
@@ -419,7 +425,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       try {
         const messages = conversation.messages
           .filter(item => item.id !== replaceId && !item.incomplete && item.content.trim())
-          .map(item => ({ role: item.role, content: item.content, reasoning_content: item.reasoning }))
+          .map(item => ({ role: item.role, content: modelContent(item), reasoning_content: item.reasoning }))
         let system: string | undefined
         const modelLimit = selectedModel?.outputTokens ?? Infinity
         let maxOutput = requestedOutput === undefined ? undefined : Math.min(requestedOutput, modelLimit)
@@ -427,16 +433,21 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           const book = await getBook(conversation.book)
           if (!book) throw new Error('本设备没有这本书的正文，请重新上传 EPUB。')
           const context = selectedModel?.contextTokens
-          const readingLimit = Math.floor((context ?? 16_384) / 4)
+          const window = context ?? 16_384
+          const history = messages.map(item => item.content + (item.reasoning_content ?? '')).join('\n')
+          const available = Math.floor(window * .9) - new TextEncoder().encode(history).length - 1500
+          const readingLimit = available - Math.max(3000, Math.min(48_000, Math.floor(available / 2)))
+          if (readingLimit < 16) throw new Error('上下文空间不足，请清理对话历史或选择上下文更大的模型。')
           maxOutput = Math.min(maxOutput ?? 8_192, modelLimit, readingLimit)
           const selection = await bookContext({
             meta: book.meta,
             chapters: book.chapters,
             focus: conversation.book.focusChapter,
             question,
-            history: messages.map(item => item.content + (item.reasoning_content ?? '')).join('\n'),
+            history,
             knownContext: context,
             maxOutput,
+            modelOutput: selectedModel?.outputTokens,
             progress: setReadingProgress,
             signal: controller.signal,
             callModel: (prompt, options, signal) => chat({
@@ -456,11 +467,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         await chat({ messages, system, max_tokens: maxOutput }, controller.signal, true)
       } catch (failure) {
         if (!controller.signal.aborted) {
-          setError(
-            failure instanceof ApiError || failure instanceof Error
+          setError({ id: conversationId, message:
+            failure instanceof Error
               ? failure.message
               : '请求失败。',
-          )
+          })
         }
         setConversations(current => current.map(item => item.id !== conversationId ? item : {
           ...item,
@@ -479,7 +490,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   )
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, quote?: string) => {
       const trimmed = text.trim()
       if (!trimmed || abortRef.current) return
 
@@ -487,6 +498,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         id: newId(),
         role: 'user',
         content: trimmed,
+        quote,
         createdAt: Date.now(),
       }
 
@@ -514,11 +526,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         ? conversationsRef.current.map(item => (item.id === conversation.id ? conversation : item))
         : [conversation, ...conversationsRef.current]
       setConversations(conversationsRef.current)
-      setActiveId(conversation.id)
+      openConversation(conversation.id)
 
-      await run(conversation, trimmed)
+      await run(conversation, modelContent(userMessage))
     },
-    [run],
+    [openConversation, run],
   )
 
   const stop = useCallback(() => {
@@ -531,7 +543,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     const lastUser = [...conversation.messages].reverse().find(item => item.role === 'user')
     if (!lastUser) return
     const last = conversation.messages.at(-1)
-    await run(conversation, lastUser.content, last?.incomplete ? last.id : undefined)
+    await run(conversation, modelContent(lastUser), last?.incomplete ? last.id : undefined)
   }, [run])
 
   /* ----------------------------------------------------------------- auth */
@@ -574,12 +586,12 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     startConversation,
     updateConversation,
     deleteConversation,
-    toggleStar,
+    togglePin,
     clearAll,
     streaming,
     streamingId,
     readingProgress,
-    error,
+    error: error?.id === activeId ? error.message : null,
     clearError: useCallback(() => setError(null), []),
     send,
     stop,

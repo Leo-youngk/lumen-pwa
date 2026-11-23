@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { cn } from '@/lib/cn'
 import { Icon, IconButton } from './Icon'
 
@@ -13,6 +13,8 @@ export interface ComposerProps {
   placeholder?: string
   /** Rendered above the field: scope pill, status text, upload errors. */
   leading?: React.ReactNode
+  context?: React.ReactNode
+  inputRef?: RefObject<HTMLTextAreaElement | null>
   /** Slot left of the field's action row, e.g. an attach button. */
   accessory?: React.ReactNode
   /** Trailing control left of the send button, e.g. the model pill. */
@@ -50,6 +52,8 @@ export function Composer({
   enterToSend = true,
   placeholder = '问 Lumen…',
   leading,
+  context,
+  inputRef,
   accessory,
   trailing,
   onAttach,
@@ -57,7 +61,8 @@ export function Composer({
   className,
   docked = true,
 }: ComposerProps) {
-  const field = useRef<HTMLTextAreaElement>(null)
+  const localField = useRef<HTMLTextAreaElement>(null)
+  const field = inputRef ?? localField
   const upload = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
@@ -69,7 +74,7 @@ export function Composer({
     if (!node) return
     node.style.height = 'auto'
     node.style.height = `${Math.min(112, Math.max(24, node.scrollHeight))}px`
-  }, [value])
+  }, [field, value])
 
   const submit = useCallback(() => {
     if (!ready) return
@@ -92,7 +97,7 @@ export function Composer({
 
   return (
     <div
-      className={cn('shrink-0 px-3', docked && 'pb-2.5', className)}
+      className={cn('relative shrink-0 px-3', docked && 'pb-2.5', className)}
     >
       {leading}
 
@@ -137,6 +142,7 @@ export function Composer({
           </div>
         ) : null}
 
+        {context}
         <textarea
           ref={field}
           rows={1}

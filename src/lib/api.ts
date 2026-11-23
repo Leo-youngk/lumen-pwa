@@ -47,12 +47,13 @@ export type ChatEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'usage'; input?: number; output?: number; total?: number }
   | { type: 'done' }
-  | { type: 'error'; error: string }
+  | { type: 'error'; error: string; code?: string }
 
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -104,6 +105,7 @@ export interface EpubResult {
   chapterCount: number
   charCount: number
   unreadable: number
+  missingSections?: string[]
   chapters: Chapter[]
 }
 
@@ -224,7 +226,7 @@ export class LumenClient {
     const decoder = new TextDecoder()
     let buffer = ''
     let completed = false
-    let failure: string | null = null
+    let failure: ApiError | null = null
 
     try {
       for (;;) {
@@ -253,7 +255,7 @@ export class LumenClient {
             continue
           }
           if (event.type === 'done') completed = true
-          if (event.type === 'error') failure = event.error
+          if (event.type === 'error') failure = new ApiError(event.error, 200, event.code)
           onEvent(event)
         }
       }
@@ -261,7 +263,7 @@ export class LumenClient {
       reader.releaseLock()
     }
 
-    if (failure) throw new ApiError(failure, 200)
+    if (failure) throw failure
     if (!completed) throw new ApiError('连接中断，回答未完整返回。请重试。', 200)
   }
 

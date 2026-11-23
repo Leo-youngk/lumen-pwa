@@ -13,7 +13,7 @@
  * The API is never cached: replies and model lists must be live.
  */
 
-const VERSION = 'lumen-shell-v59'
+const VERSION = 'lumen-shell-v60'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg']
 
 self.addEventListener('install', event => {

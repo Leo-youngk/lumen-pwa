@@ -32,7 +32,7 @@ export interface Settings {
   compactMode: boolean
   enterToSend: boolean
   reasoningByModel: Record<string, string>
-  outputTokenLimit: number | 'max' | null
+  outputTokenLimit: number | 'max' | 'auto'
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -46,7 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   compactMode: false,
   enterToSend: true,
   reasoningByModel: {},
-  outputTokenLimit: null,
+  outputTokenLimit: 130_000,
 }
 
 export interface BookRecord {
@@ -56,6 +56,7 @@ export interface BookRecord {
   chapterCount: number
   charCount: number
   unreadable?: number
+  missingSections?: string[]
   markdown?: string
   focusChapter?: number | null
   cover?: string
@@ -64,12 +65,14 @@ export interface BookRecord {
 export interface Chapter {
   title: string
   text: string
+  source?: string
 }
 
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  quote?: string
   reasoning?: string
   incomplete?: boolean
   createdAt: number
@@ -81,6 +84,7 @@ export interface Conversation {
   model: string
   messages: Message[]
   book?: BookRecord
+  pinned?: boolean
   starred?: boolean
   updatedAt: number
   createdAt: number
@@ -130,7 +134,11 @@ export function newId(): string {
 
 export function loadSettings(): Settings {
   const stored = readJson<Partial<Settings>>(KEYS.settings, {})
-  return { ...DEFAULT_SETTINGS, ...stored }
+  return {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    outputTokenLimit: stored.outputTokenLimit ?? DEFAULT_SETTINGS.outputTokenLimit,
+  }
 }
 
 export function saveSettings(settings: Settings): void {
@@ -156,6 +164,16 @@ export function saveModel(model: string): void {
 
 export function loadConversations(): Conversation[] {
   return validConversations(readJson(KEYS.conversations, []))
+}
+
+export function isPinned(conversation: Conversation): boolean {
+  return conversation.pinned ?? conversation.starred ?? false
+}
+
+export function sortConversations(conversations: Conversation[]): Conversation[] {
+  return [...conversations].sort((a, b) =>
+    Number(isPinned(b)) - Number(isPinned(a)) || b.updatedAt - a.updatedAt,
+  )
 }
 
 function validConversations(stored: unknown): Conversation[] {
