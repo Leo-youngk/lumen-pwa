@@ -243,6 +243,8 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       // Appearance resets should not wipe the person's own provider setup.
       apiBaseUrl: current.apiBaseUrl,
       apiKey: current.apiKey,
+      reasoningByModel: current.reasoningByModel,
+      outputTokenLimit: current.outputTokenLimit,
     }))
   }, [])
 
@@ -338,7 +340,13 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       const selectedModel = models.find(option => option.id === conversation.model)
         ?? models.find(option => option.id === modelRef.current) ?? models[0]
       const selectedId = selectedModel?.id ?? conversation.model
-      const config = providerHeaders(settingsRef.current)
+      const currentSettings = settingsRef.current
+      const config = providerHeaders(currentSettings)
+      const savedEffort = currentSettings.reasoningByModel?.[selectedId]
+      const effort = selectedModel?.reasoningOptions.find(option => option === savedEffort)
+      const requestedOutput = currentSettings.outputTokenLimit === 'max'
+        ? selectedModel?.outputTokens
+        : currentSettings.outputTokenLimit ?? undefined
       const requestClient = new LumenClient('', { headers: () => config })
       const controller = new AbortController()
       abortRef.current = controller
@@ -381,7 +389,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         }
 
         try {
-          await requestClient.chat({ ...body, model: selectedId, session_id: conversationId }, event => {
+          await requestClient.chat({
+            ...body, model: selectedId, session_id: conversationId,
+            provider_protocol: selectedModel?.protocol,
+            reasoning_effort: streamAnswer ? effort : undefined,
+          }, event => {
             if (event.type === 'usage') {
               const input = event.input ?? 0
               const outputTokens = event.output ?? 0
@@ -409,12 +421,14 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           .filter(item => item.id !== replaceId && !item.incomplete && item.content.trim())
           .map(item => ({ role: item.role, content: item.content, reasoning_content: item.reasoning }))
         let system: string | undefined
-        let maxOutput: number | undefined
+        const modelLimit = selectedModel?.outputTokens ?? Infinity
+        let maxOutput = requestedOutput === undefined ? undefined : Math.min(requestedOutput, modelLimit)
         if (conversation.book) {
           const book = await getBook(conversation.book)
           if (!book) throw new Error('本设备没有这本书的正文，请重新上传 EPUB。')
           const context = selectedModel?.contextTokens
-          maxOutput = Math.min(8_192, Math.floor((context ?? 16_384) / 4))
+          const readingLimit = Math.floor((context ?? 16_384) / 4)
+          maxOutput = Math.min(maxOutput ?? 8_192, modelLimit, readingLimit)
           const selection = await bookContext({
             meta: book.meta,
             chapters: book.chapters,
@@ -432,6 +446,12 @@ export function LumenProvider({ children }: { children: ReactNode }) {
             }, signal, false),
           })
           system = selection.system
+        } else if (maxOutput !== undefined && selectedModel?.contextTokens) {
+          const encoder = new TextEncoder()
+          const input = messages.reduce((total, message) =>
+            total + encoder.encode(message.content + (message.reasoning_content ?? '')).length + 12, 1024)
+          maxOutput = Math.min(maxOutput, selectedModel.contextTokens - input)
+          if (maxOutput < 16) throw new Error('对话历史占用了模型的上下文，请新建对话后重试。')
         }
         await chat({ messages, system, max_tokens: maxOutput }, controller.signal, true)
       } catch (failure) {

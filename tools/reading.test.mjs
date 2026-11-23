@@ -196,3 +196,47 @@ test('provider redirects are surfaced without forwarding the provider key', asyn
   }
   assert.deepEqual(calls, ['https://models.example.com/v1/models', 'https://models.example.com/v1/chat/completions'])
 })
+
+test('Go forwards the elected output cap and reasoning controls in the model protocol', async t => {
+  const headers = await sessionHeaders()
+  const requests = []
+  const frame = event => `data: ${JSON.stringify(event)}\n\n`
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) })
+    const events = url.endsWith('/responses')
+      ? [{ type: 'response.output_text.delta', delta: 'OK' }, { type: 'response.completed' }]
+      : url.endsWith('/messages')
+        ? [{ type: 'content_block_delta', delta: { type: 'text_delta', text: 'OK' } }, { type: 'message_stop' }]
+        : [{ choices: [{ delta: { content: 'OK' }, finish_reason: 'stop' }] }]
+    return new Response(events.map(frame).join(''))
+  })
+
+  async function send(model, protocol, effort, maxTokens) {
+    const response = await worker.fetch(new Request(origin + '/api/chat', {
+      method: 'POST', headers, body: JSON.stringify({
+        model, provider_protocol: protocol, reasoning_effort: effort, max_tokens: maxTokens,
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    }), env)
+    const body = await response.text()
+    assert.equal(response.status, 200)
+    assert.match(body, /"type":"text","text":"OK"/)
+    assert.doesNotMatch(body, /"type":"error"/)
+  }
+
+  await send('deepseek-v4-pro', 'chat-completions', 'high', 4096)
+  await send('muse-spark-1.3-contributor', 'responses', 'low', 32768)
+  await send('qwen3.8-max', 'messages', 'medium', 1024)
+  await send('qwen3.8-max', 'messages', 'none', 4096)
+  await send('kimi-k3', 'chat-completions', undefined, undefined)
+  assert.equal(requests[0].body.reasoning_effort, 'high')
+  assert.equal(requests[0].body.max_tokens, 4096)
+  assert.match(requests[1].url, /\/openai\/v1\/responses$/)
+  assert.deepEqual(requests[1].body.reasoning, { effort: 'low' })
+  assert.equal(requests[1].body.max_output_tokens, 32768)
+  assert.deepEqual(requests[2].body.output_config, { effort: 'medium' })
+  assert.equal(requests[2].body.max_tokens, 1024)
+  assert.deepEqual(requests[3].body.thinking, { type: 'disabled' })
+  assert.equal(requests[4].body.max_tokens, undefined)
+  assert.equal(requests[4].body.reasoning_effort, undefined)
+})

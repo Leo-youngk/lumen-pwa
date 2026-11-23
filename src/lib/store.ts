@@ -31,6 +31,8 @@ export interface Settings {
   paragraphSpacing: number
   compactMode: boolean
   enterToSend: boolean
+  reasoningByModel: Record<string, string>
+  outputTokenLimit: number | 'max' | null
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -43,6 +45,8 @@ export const DEFAULT_SETTINGS: Settings = {
   paragraphSpacing: 16,
   compactMode: false,
   enterToSend: true,
+  reasoningByModel: {},
+  outputTokenLimit: null,
 }
 
 export interface BookRecord {

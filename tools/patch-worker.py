@@ -8,7 +8,7 @@ def replace(old, new, count=1):
     worker = worker.replace(old, new)
 
 worker = """import { handleEpub } from './epub.mjs';
-import { goBaseUrl, isOpenCodeGo, providerRoute, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
+import { goBaseUrl, isOpenCodeGo, providerRoute, providerReasoningParams, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
 
 """ + worker
 replace('var DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";', 'var DEFAULT_BASE_URL = goBaseUrl;')
@@ -18,7 +18,7 @@ replace('  if (!client) return { baseUrl: fallback, source: "server", error: nul
     return { baseUrl: fallback, source: "server", error: "自定义接口需要填写该服务的 API Key。" };
   }''')
 replace('  const usesAnthropicEndpoint = lowerModel.startsWith("minimax-") || lowerModel.startsWith("qwen");\n  const endpointPath = usesAnthropicEndpoint ? "/messages" : "/chat/completions";',
-'''  const endpointPath = providerRoute(baseUrl, lowerModel);
+'''  const endpointPath = providerRoute(baseUrl, lowerModel, payload.provider_protocol);
   const usesAnthropicEndpoint = endpointPath === "/messages";
   const usesResponses = endpointPath === "/responses";''')
 replace('  }) : JSON.stringify({\n    model,\n    messages: openAiMessages,\n    stream: true,',
@@ -26,7 +26,8 @@ replace('  }) : JSON.stringify({\n    model,\n    messages: openAiMessages,\n   
     model,
     input: openAiMessages.filter(message => message.role !== "system").map(({ role, content }) => ({ role, content })),
     ...(system ? { instructions: system } : {}),
-    max_output_tokens: typeof payload.max_tokens === "number" ? Math.max(16, payload.max_tokens) : 8192,
+    max_output_tokens: Math.max(16, maxTokens ?? 8192),
+    ...reasoningParams,
     stream: true
   }) : JSON.stringify({
     model,

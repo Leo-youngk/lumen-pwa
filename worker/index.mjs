@@ -1,5 +1,5 @@
 import { handleEpub } from './epub.mjs';
-import { goBaseUrl, isOpenCodeGo, providerRoute, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
+import { goBaseUrl, isOpenCodeGo, providerRoute, providerReasoningParams, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
 
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
@@ -240,10 +240,14 @@ async function handleChat(request, env) {
   }
   const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : env.OPENCODE_GO_MODEL || "deepseek-v4-pro";
   const lowerModel = model.toLowerCase();
-  const endpointPath = providerRoute(baseUrl, lowerModel);
+  const endpointPath = providerRoute(baseUrl, lowerModel, payload.provider_protocol);
   const usesAnthropicEndpoint = endpointPath === "/messages";
   const usesResponses = endpointPath === "/responses";
   const modelSupportsReasoning = supportsReasoning(model);
+  const maxTokens = Number.isSafeInteger(payload.max_tokens) && payload.max_tokens > 0
+    ? payload.max_tokens
+    : void 0;
+  const reasoningParams = providerReasoningParams(endpointPath, payload.reasoning_effort, maxTokens ?? 65536);
   const openAiMessages = [
     // OpenAI 兼容端点用 system 角色；Anthropic 兼容端点用顶层 system 字段（见下）。
     ...system ? [{ role: "system", content: system }] : [],
@@ -266,7 +270,8 @@ async function handleChat(request, env) {
     model,
     messages: anthropicMessages,
     ...system ? { system } : {},
-    max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : 65536,
+    max_tokens: maxTokens ?? 65536,
+    ...reasoningParams,
     // Anthropic 兼容端点只接受 0~1 的温度；开启思考时通常要求不传温度，这里只做钳制。
     ...typeof payload.temperature === "number" ? { temperature: Math.min(1, Math.max(0, payload.temperature)) } : {},
     stream: true
@@ -274,7 +279,8 @@ async function handleChat(request, env) {
     model,
     input: openAiMessages.filter(message => message.role !== "system").map(({ role, content }) => ({ role, content })),
     ...(system ? { instructions: system } : {}),
-    max_output_tokens: typeof payload.max_tokens === "number" ? Math.max(16, payload.max_tokens) : 8192,
+    max_output_tokens: Math.max(16, maxTokens ?? 8192),
+    ...reasoningParams,
     stream: true
   }) : JSON.stringify({
     model,
@@ -282,9 +288,10 @@ async function handleChat(request, env) {
     stream: true,
     stream_options: { include_usage: true },
     // reasoning 仅对支持的模型透传：true 开启思考，false 显式关闭。
-    ...modelSupportsReasoning && typeof payload.reasoning === "boolean" ? { reasoning: payload.reasoning } : {},
+    ...!payload.reasoning_effort && modelSupportsReasoning && typeof payload.reasoning === "boolean" ? { reasoning: payload.reasoning } : {},
+    ...reasoningParams,
     ...typeof payload.temperature === "number" ? { temperature: payload.temperature } : {},
-    ...typeof payload.max_tokens === "number" ? { max_tokens: payload.max_tokens } : {}
+    ...maxTokens === void 0 ? {} : { max_tokens: maxTokens }
   });
   const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
   diag("chat.request", {
@@ -299,7 +306,7 @@ async function handleChat(request, env) {
     systemChars: system.length,
     temperature: payload.temperature,
     maxTokens: payload.max_tokens,
-    reasoning: payload.reasoning
+    reasoning: payload.reasoning_effort ?? payload.reasoning
   });
   const upstreamController = new AbortController();
   let upstream;

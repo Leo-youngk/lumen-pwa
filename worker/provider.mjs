@@ -6,12 +6,33 @@ export function isOpenCodeGo(baseUrl) {
   return parsed.origin === goOrigin && /^\/(?:zen\/go\/v1|inference\/go)(?:\/|$)/.test(parsed.pathname)
 }
 
-export function providerRoute(baseUrl, model) {
+export function providerRoute(baseUrl, model, protocol) {
   if (!isOpenCodeGo(baseUrl)) return '/chat/completions'
+  if (protocol === 'chat-completions') return '/chat/completions'
+  if (protocol === 'responses') return '/responses'
+  if (protocol === 'messages') return '/messages'
   const id = model.toLowerCase()
   if (/^(gpt-|grok-)/.test(id)) return '/responses'
   if (/^(claude-|minimax-|qwen)/.test(id)) return '/messages'
   return '/chat/completions'
+}
+
+const effortLevels = new Set(['none', 'on', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+
+export function providerReasoningParams(endpoint, effort, maxTokens) {
+  if (!effortLevels.has(effort)) return {}
+  if (endpoint === '/responses') {
+    return effort === 'on' ? {} : { reasoning: { effort } }
+  }
+  if (endpoint === '/messages') {
+    if (effort === 'none') return { thinking: { type: 'disabled' } }
+    if (effort === 'on') {
+      return { thinking: { type: 'enabled', budget_tokens: Math.min(1024, maxTokens - 1) } }
+    }
+    return { output_config: { effort } }
+  }
+  if (effort === 'on') return { thinking: { type: 'enabled' } }
+  return { reasoning_effort: effort }
 }
 
 export function providerModelsUrl(baseUrl) {

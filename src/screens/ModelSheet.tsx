@@ -5,11 +5,18 @@ import { Icon, IconButton } from '@/components/Icon'
 import { useLumen } from '@/state/LumenContext'
 import { getBook } from '@/lib/store'
 import { cn } from '@/lib/cn'
+import { REASONING_LABELS } from '@/lib/api'
+
+const outputPresets = [1024, 4096, 8192, 16384, 32768, 65536]
 
 export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { models, model, setModel, modelStatus, refreshModels } = useLumen()
+  const { active, models, model, setModel, modelStatus, refreshModels, settings, updateSettings } = useLumen()
   const [query, setQuery] = useState('')
   const searchable = models.length > 8
+  const selected = models.find(item => item.id === active?.model) ?? models.find(item => item.id === model) ?? models[0]
+  const selectedEffort = selected?.reasoningOptions.find(level => level === settings.reasoningByModel?.[selected.id])
+  const output = settings.outputTokenLimit === 'max' && !selected?.outputTokens ? '' : settings.outputTokenLimit ?? ''
+  const selectClass = 'min-h-10 max-w-[56%] rounded-md bg-field px-2 text-[16px] text-ink'
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -39,6 +46,48 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
           />
         </div>
 
+        {selected ? (
+          <div className="mx-4 mb-4 divide-y divide-(--separator) rounded-[16px] bg-surface px-3">
+            <label className="flex min-h-[52px] items-center justify-between gap-3">
+              <span className="text-[14px] font-medium">思考强度</span>
+              <select
+                className={selectClass}
+                value={selectedEffort ?? ''}
+                disabled={!selected.reasoningOptions.length}
+                onChange={event => updateSettings({
+                  reasoningByModel: { ...settings.reasoningByModel, [selected.id]: event.target.value },
+                })}
+              >
+                <option value="">{selected.reasoningOptions.length ? '模型默认' : '暂无可调档位'}</option>
+                {selected.reasoningOptions.map(level => (
+                  <option key={level} value={level}>{REASONING_LABELS[level]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex min-h-[52px] items-center justify-between gap-3">
+              <span className="text-[14px] font-medium">输出上限</span>
+              <select
+                className={selectClass}
+                value={output}
+                onChange={event => {
+                  const value = event.target.value
+                  updateSettings({ outputTokenLimit: !value ? null : value === 'max' ? value : Number(value) })
+                }}
+              >
+                <option value="">自动</option>
+                {outputPresets.map(limit => (
+                  <option key={limit} value={limit}>{`${limit.toLocaleString()} tokens`}</option>
+                ))}
+                {selected.outputTokens ? <option value="max">模型上限</option> : null}
+              </select>
+            </label>
+            <p className="py-2 text-[12px] text-quiet">
+              {selected.outputTokens ? `最高支持 ${selected.outputTokens.toLocaleString()} tokens。` : ''}
+              {active?.book ? '读书问答会预留书籍上下文。' : '上限受剩余上下文约束。'}
+            </p>
+          </div>
+        ) : null}
+
         {searchable ? (
           <label className="mx-4 mb-3 flex h-9 items-center gap-2 rounded-[10px] bg-field px-2.5">
             <Icon name="search" size={16} className="text-quiet" />
@@ -56,7 +105,7 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
         <div className="overflow-hidden bg-surface hairline-t hairline-b">
           {visible.length ? (
             visible.map((option, index) => {
-              const picked = option.id === model
+              const picked = option.id === selected?.id
               return (
                 <button
                   key={option.id}

@@ -7,6 +7,24 @@ export interface ModelOption {
   family: string
   capacity?: string
   contextTokens?: number
+  outputTokens?: number
+  reasoningOptions: ReasoningOption[]
+  protocol?: ModelProtocol
+}
+
+export type ReasoningOption = 'none' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
+type ModelProtocol = 'chat-completions' | 'responses' | 'messages'
+
+export const REASONING_LABELS: Record<ReasoningOption, string> = {
+  none: '关闭',
+  on: '开启',
+  minimal: '最低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '很高',
+  max: '最高',
+  ultra: '极限',
 }
 
 interface RawModel {
@@ -17,7 +35,10 @@ interface RawModel {
   context_window?: number
   max_context_tokens?: number
   top_provider?: { context_length?: number }
-  limit?: { context?: number }
+  limit?: { context?: number; output?: number }
+  max_output_tokens?: number
+  capabilities?: { reasoning?: { supported?: boolean; effort?: unknown; toggle?: boolean } }
+  api?: Partial<Record<ModelProtocol, unknown>>
 }
 
 /** A single streamed event from `/api/chat`. */
@@ -60,6 +81,21 @@ function readContextTokens(raw: RawModel): number | undefined {
     (item): item is number => Number.isSafeInteger(item) && (item ?? 0) > 0,
   )
   return value
+}
+
+function reasoningOptions(model: RawModel, protocol?: ModelProtocol): ReasoningOption[] {
+  const reasoning = model.capabilities?.reasoning
+  if (!reasoning?.supported) return []
+  const options = new Set<ReasoningOption>()
+  if (reasoning.toggle) options.add('none')
+  if (Array.isArray(reasoning.effort)) {
+    const levels = reasoning.effort
+    for (const level of Object.keys(REASONING_LABELS) as ReasoningOption[]) {
+      if (levels.includes(level)) options.add(level)
+    }
+  }
+  if (reasoning.toggle && options.size === 1 && protocol !== 'responses') options.add('on')
+  return [...options]
 }
 
 export interface EpubResult {
@@ -133,12 +169,18 @@ export class LumenClient {
       .filter((item): item is RawModel & { id: string } => Boolean(item?.id))
       .map(item => {
         const contextTokens = readContextTokens(item)
+        const outputTokens = [item.limit?.output, item.max_output_tokens]
+          .find((limit): limit is number => Number.isSafeInteger(limit) && (limit ?? 0) > 0)
+        const protocol = (['chat-completions', 'responses', 'messages'] as const).find(value => item.api?.[value])
         return {
           id: item.id,
           name: item.name || item.id,
           family: item.family || '服务端',
           capacity: contextTokens ? formatCapacity(contextTokens) : undefined,
           contextTokens,
+          outputTokens,
+          protocol,
+          reasoningOptions: reasoningOptions(item, protocol),
         }
       })
   }
