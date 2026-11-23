@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "esbuild": "0.28.2",
+    "fflate": "0.8.2",
+    "parse5": "8.0.0",
+    "saxes": "6.0.0",
+    "wrangler": "4.166.0"
+  }
+}

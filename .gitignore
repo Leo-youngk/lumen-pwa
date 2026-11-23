@@ -1,0 +1,8 @@
+node_modules/
+built/
+.wrangler/
+screenshots/
+.env*
+.dev.vars*
+wrangler.jsonc
+__pycache__/
