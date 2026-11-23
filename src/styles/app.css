@@ -407,21 +407,336 @@
   }
 }
 
-/* Assistant answers. Sans-serif with a comfortable measure; paragraph spacing
-   is tighter than a document because a chat reply is read in a stream. */
+
+/* ------------------------------------------------------- answer typography */
+
+/*
+ * Assistant answer styling.
+ *
+ * The numbers come from the typography LobeHub ships for its chat variant,
+ * which has been tuned against a very large amount of real model output:
+ *
+ * - A chat answer is denser than a document. Body 15 px, line height 1.7,
+ *   headings only slightly larger than body — a document-style 24 px h2 in a
+ *   narrow phone column chops the answer into disconnected slabs.
+ * - Paragraph spacing is a small base plus an additive gap between siblings,
+ *   so a one-line paragraph does not float alone in a sea of margin while a
+ *   multi-line one still breathes.
+ * - `letter-spacing: 0.02em` is there for CJK, where the default tracking makes
+ *   long Chinese paragraphs feel cramped.
+ */
 .lumen-prose {
+  --prose-gap: 0.5em;
+  --prose-heading-scale: 0.35;
+
+  color: inherit;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
 
-.lumen-prose > * + * {
-  margin-top: 0.75em;
+/* Answer body */
+.lumen-prose > :first-child {
+  margin-top: 0;
 }
 
-.lumen-prose > * + *:is(ul, ol) {
+.lumen-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.lumen-prose p {
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.lumen-prose p + p,
+.lumen-prose p + :is(ul, ol, blockquote, .lumen-code, .lumen-table-wrap, .katex-display) {
+  margin-top: var(--prose-gap);
+}
+
+.lumen-prose :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.1em 0 0.45em;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+}
+
+.lumen-prose :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+
+/* Headings inside an answer stay close to body size; the hierarchy is carried
+   by weight and a small step in size, not by doubling the type. */
+.lumen-prose h1 {
+  font-size: calc(1em * (1 + 0.5 * var(--prose-heading-scale)));
+}
+.lumen-prose h2 {
+  font-size: calc(1em * (1 + 0.35 * var(--prose-heading-scale)));
+}
+.lumen-prose h3 {
+  font-size: calc(1em * (1 + 0.2 * var(--prose-heading-scale)));
+}
+.lumen-prose :is(h4, h5, h6) {
+  font-size: 1em;
+}
+
+.lumen-prose strong {
+  font-weight: 650;
+}
+
+.lumen-prose em {
+  font-style: italic;
+}
+
+.lumen-prose :is(ul, ol) {
+  margin: 0.5em 0;
+  padding-left: 1.15em;
+}
+
+.lumen-prose li {
+  margin: 0.28em 0;
+  padding-left: 0.15em;
+  letter-spacing: 0.02em;
+}
+
+.lumen-prose li > p {
+  display: inline;
+}
+
+.lumen-prose :is(ul, ol) :is(ul, ol) {
+  margin: 0.25em 0;
+}
+
+.lumen-prose ul {
+  list-style: none;
+}
+
+/* A half-opacity dash instead of a filled bullet: it recedes behind the text
+   the same way the numbers on an ordered list do. */
+.lumen-prose ul > li {
+  position: relative;
+  padding-left: 0.9em;
+}
+
+.lumen-prose ul > li::before {
+  content: '–';
+  position: absolute;
+  left: 0;
+  color: var(--color-quiet);
+  opacity: 0.75;
+}
+
+.lumen-prose .task-list-item {
+  padding-left: 0;
+}
+
+.lumen-prose .task-list-item::before {
+  content: none;
+}
+
+.lumen-prose .task-list-item input[type='checkbox'] {
+  margin-right: 0.45em;
+  vertical-align: baseline;
+  accent-color: var(--color-brand);
+}
+
+.lumen-prose ol {
+  list-style: decimal;
+}
+
+.lumen-prose ol > li::marker {
+  color: var(--color-quiet);
+  font-variant-numeric: tabular-nums;
+}
+
+.lumen-prose blockquote {
+  margin: 0.7em 0;
+  padding: 0 0 0 1em;
+  border-left: 3px solid var(--color-edge-strong);
+  color: var(--color-secondary);
+}
+
+.lumen-prose blockquote p {
+  margin: 0;
+}
+
+.lumen-prose blockquote p + p {
   margin-top: 0.5em;
 }
 
-.lumen-prose a {
-  word-break: break-all;
+.lumen-prose hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px dashed var(--color-edge);
+}
+
+.lumen-prose .lumen-link {
+  color: var(--color-brand-ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-brand-ink) 35%, transparent);
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+
+.lumen-prose .lumen-link:active {
+  opacity: 0.6;
+}
+
+/* Inline code: tinted chip, tight radius, no border. */
+.lumen-prose .lumen-inline-code,
+.lumen-prose code:not(.lumen-code__body code) {
+  padding: 0.1em 0.36em;
+  border-radius: 5px;
+  background: var(--color-field);
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  white-space: break-spaces;
+}
+
+.lumen-prose del {
+  color: var(--color-quiet);
+}
+
+/* --------------------------------------------------------------- tables */
+
+/*
+ * A wide table has to scroll inside the message column rather than stretch it.
+ * `display: block; width: max-content; max-width: 100%` is the pairing that
+ * does this; the rounded corners need the wrapper because a `block` table
+ * cannot clip its own corners reliably in Safari.
+ */
+.lumen-table-wrap {
+  margin: 0.7em 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 10px;
+  border: 1px solid var(--color-edge);
+  scrollbar-width: thin;
+}
+
+.lumen-prose table {
+  width: max-content;
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94em;
+  text-align: left;
+  text-wrap: pretty;
+}
+
+.lumen-prose thead {
+  background: var(--color-field);
+}
+
+.lumen-prose :is(th, td) {
+  min-width: 84px;
+  padding: 0.55em 0.85em;
+  border-bottom: 1px solid var(--color-edge);
+  letter-spacing: 0.01em;
+  vertical-align: top;
+}
+
+.lumen-prose th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lumen-prose tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+/* ----------------------------------------------------------- code blocks */
+
+.lumen-code {
+  margin: 0.7em 0;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-field);
+}
+
+.lumen-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  padding: 0.32em 0.7em;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+.lumen-code__lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-quiet);
+}
+
+.lumen-code__copy {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-brand-ink);
+  transition: opacity 120ms;
+}
+
+.lumen-code__copy:active {
+  opacity: 0.5;
+}
+
+.lumen-code__body {
+  margin: 0;
+  padding: 0.75em 0.85em;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  font-family: var(--font-mono);
+  font-size: 12.75px;
+  line-height: 1.62;
+  tab-size: 2;
+}
+
+/* Shiki emits its own <pre> inside the body div; neutralise the doubles. */
+.lumen-code__body--hl pre {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent !important;
+}
+
+.lumen-code__body--hl code {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* Shiki dual-theme output: one HTML, two palettes. */
+.lumen-code__body--hl span {
+  color: var(--shiki-light);
+}
+
+:root[data-theme='dark'] .lumen-code__body--hl span {
+  color: var(--shiki-dark);
+}
+
+/* ------------------------------------------------------------------ math */
+
+.lumen-prose .katex {
+  font-size: 1.03em;
+}
+
+.lumen-prose .katex-display {
+  margin: 0.75em 0;
+  padding: 0.15em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.lumen-prose .katex-display > .katex {
+  white-space: normal;
+}
+
+.lumen-prose .katex-error {
+  color: var(--color-quiet) !important;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
 }
