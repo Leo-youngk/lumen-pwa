@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { cn } from '@/lib/cn'
 import { isPinned, type Conversation } from '@/lib/store'
+import { groupByDay } from '@/lib/time'
 import { Icon, Tile } from './Icon'
 
 /**
@@ -19,32 +20,6 @@ import { Icon, Tile } from './Icon'
  * - Only the horizontal component is claimed (`pan-y` stays with the list), so
  *   scrolling the conversation list never closes the drawer by accident.
  */
-
-const DAY = 86_400_000
-
-export function groupByDay(items: Conversation[]) {
-  const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const today: Conversation[] = []
-  const yesterday: Conversation[] = []
-  const week: Conversation[] = []
-  const older: Conversation[] = []
-
-  for (const item of items) {
-    const age = startOfToday - item.updatedAt
-    if (item.updatedAt >= startOfToday) today.push(item)
-    else if (age < DAY) yesterday.push(item)
-    else if (age < 7 * DAY) week.push(item)
-    else older.push(item)
-  }
-
-  return [
-    { label: '今天', items: today },
-    { label: '昨天', items: yesterday },
-    { label: '7 天内', items: week },
-    { label: '更早', items: older },
-  ].filter((group) => group.items.length > 0)
-}
 
 export interface SideDrawerProps {
   open: boolean

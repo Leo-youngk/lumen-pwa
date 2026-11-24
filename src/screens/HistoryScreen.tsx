@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Tile } from '@/components/Icon'
 import { NavigationBar } from '@/components/NavigationBar'
-import { groupByDay } from '@/components/SideDrawer'
+import { groupByDay } from '@/lib/time'
 import { isPinned, sortConversations } from '@/lib/store'
 import { useLumen } from '@/state/LumenContext'
 import { cn } from '@/lib/cn'
