@@ -20,7 +20,7 @@ export interface ChatScreenProps {
   onOpenScope: () => void
   onNew: () => void
   onUpload: (file: File) => void
-  uploading: boolean
+  importStatus: string
   onSent: () => void
 }
 
@@ -31,7 +31,7 @@ export function ChatScreen({
   onOpenScope,
   onNew,
   onUpload,
-  uploading,
+  importStatus,
   onSent,
 }: ChatScreenProps) {
   const {
@@ -39,6 +39,7 @@ export function ChatScreen({
     send,
     stop,
     retry,
+    continueAnswer,
     streaming,
     streamingId,
     readingProgress,
@@ -52,6 +53,7 @@ export function ChatScreen({
   } = useLumen()
 
   const touch = useIsTouch()
+  const uploading = Boolean(importStatus)
   const conversationKey = active?.id ?? 'home'
   const { text: draft, quote, setText: setDraft, setQuote, clear: clearDraft } = useChatDraft(conversationKey)
   const [draftScope, setDraftScope] = useState(conversationKey)
@@ -64,6 +66,10 @@ export function ChatScreen({
 
   const messages = active?.messages ?? []
   const generating = streamingId === active?.id
+  const modelReady = modelStatus.state === 'ready' && models.length > 0
+  const canRetry = !streaming && !uploading && modelReady
+  const last = messages.at(-1)
+  const canContinue = last?.role === 'assistant' && last.incomplete && Boolean(last.content.trim())
   if (draftScope !== conversationKey) {
     setDraftScope(conversationKey)
     setSelection('')
@@ -73,9 +79,11 @@ export function ChatScreen({
     ? '正在发送所选范围内的全部正文…'
     : readingProgress?.stage === 'read'
       ? `已读原文 ${readingProgress.done}/${readingProgress.total} 批`
-      : readingProgress
+      : readingProgress?.stage === 'merge'
         ? `正在汇总 ${readingProgress.done}/${readingProgress.total} 批`
-        : ''
+        : readingProgress?.stage === 'retry'
+          ? '连接暂时中断，正在重试…'
+          : readingProgress?.stage === 'answer' ? '正在等待模型回答…' : ''
 
   // The keyboard, draft, and streamed Markdown can all resize the feed.
   useLayoutEffect(() => {
@@ -184,7 +192,8 @@ export function ChatScreen({
                   compact={settings.compactMode}
                   fontSize={settings.fontSize}
                   lineHeight={settings.lineHeight}
-                  onRetry={index === messages.length - 1 && !streaming && modelStatus.state === 'ready' ? retry : undefined}
+                  onRetry={index === messages.length - 1 && canRetry ? retry : undefined}
+                  onContinue={index === messages.length - 1 && canRetry && canContinue && !error ? continueAnswer : undefined}
                 />
               ),
             )}
@@ -195,7 +204,7 @@ export function ChatScreen({
               <button
                 type="button"
                 onClick={() => void retry()}
-                disabled={modelStatus.state !== 'ready'}
+                disabled={!canRetry}
                 className="mx-4 my-2 min-h-10 rounded-full bg-field px-4 text-[14px] text-secondary disabled:opacity-40"
               >
                 重新发送
@@ -208,14 +217,14 @@ export function ChatScreen({
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    disabled={streaming || modelStatus.state !== 'ready'}
+                    disabled={!canRetry}
                     onClick={() => {
                       clearError()
-                      void retry()
+                      void (canContinue ? continueAnswer() : retry())
                     }}
                     className="rounded-full bg-white/55 px-3 py-1 text-[13px] font-medium active:opacity-60 disabled:opacity-40"
                   >
-                    重试
+                    {canContinue ? '继续生成' : '重试'}
                   </button>
                   <button
                     type="button"
@@ -264,7 +273,8 @@ export function ChatScreen({
         }}
         onStop={stop}
         streaming={generating}
-        disabled={uploading || (streaming && !generating) || modelStatus.state !== 'ready' || !models.length}
+        disabled={uploading || (streaming && !generating) || !modelReady}
+        attachDisabled={uploading || streaming}
         leading={selection ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-start px-4 pb-2">
             <button
@@ -290,7 +300,7 @@ export function ChatScreen({
                 {modelStatus.state === 'loading' ? '正在连接模型…' : '模型暂不可用，点顶部模型名称可重新连接。'}
               </p>
             ) : null}
-            {uploading ? <p role="status" className="px-2 text-[13px] text-quiet">正在转换 EPUB…</p> : null}
+            {uploading ? <p role="status" className="px-2 text-[13px] text-quiet">{importStatus}</p> : null}
             {active?.book ? (
               <button
                 type="button"

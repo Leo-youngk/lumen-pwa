@@ -9,6 +9,7 @@ export interface ComposerProps {
   onStop?: () => void
   streaming?: boolean
   disabled?: boolean
+  attachDisabled?: boolean
   enterToSend?: boolean
   placeholder?: string
   leading?: React.ReactNode
@@ -32,6 +33,7 @@ export function Composer({
   onStop,
   streaming = false,
   disabled = false,
+  attachDisabled = false,
   enterToSend = true,
   placeholder = '问 Lumen…',
   leading,
@@ -84,7 +86,7 @@ export function Composer({
   }
 
   function pickFile(file: File | undefined) {
-    if (!file || disabled || streaming) return
+    if (!file || attachDisabled || streaming) return
     onAttach(file)
   }
 
@@ -99,7 +101,7 @@ export function Composer({
           submit()
         }}
         onDragEnter={event => {
-          if (disabled || streaming || !Array.from(event.dataTransfer.types).includes('Files')) return
+          if (attachDisabled || streaming || !Array.from(event.dataTransfer.types).includes('Files')) return
           event.preventDefault()
           dragDepth.current += 1
           setDragging(true)
@@ -141,7 +143,7 @@ export function Composer({
           icon="plus"
           label="上传书籍"
           onClick={() => upload.current?.click()}
-          disabled={disabled || streaming}
+          disabled={attachDisabled || streaming}
           className="size-11 shrink-0 border border-edge bg-transparent text-secondary"
         />
 

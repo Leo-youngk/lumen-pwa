@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { strToU8, zipSync } from 'fflate'
 import { bookContext } from '../client/features.js'
+import { parseEpub } from '../worker/epub.mjs'
 import worker from '../worker/index.mjs'
 
 const origin = 'http://localhost'
@@ -9,6 +10,9 @@ const env = {
   APP_ACCESS_TOKEN: 'local-test-only',
   OPENCODE_GO_API_KEY: 'upstream-test-only',
 }
+
+const epubArchive = documents => zipSync(Object.fromEntries(Object.entries(documents)
+  .map(([path, value]) => [path, typeof value === 'string' ? strToU8(value) : value])))
 
 async function sessionHeaders() {
   const request = new Request(origin + '/api/auth', {
@@ -55,6 +59,39 @@ test('EPUB returns complete Markdown chapters in spine order', async () => {
   assert.match(book.chapters[1].text, /图中可提取的正文/)
   assert.match(book.chapters[2].text, /扫描页/)
   assert.match(book.chapters[3].text, /全书末尾线索/)
+})
+
+test('local import accepts a large illustrated EPUB and keeps sections after a broken chapter', () => {
+  const epub = epubArchive({
+    'META-INF/container.xml': '<container><rootfiles><rootfile full-path="missing.opf"/><rootfile full-path="OPS/Book%20Main.opf"/></rootfiles></container>',
+    './ops/Book Main.opf': '<package><metadata><dc:title>旧版图文书</dc:title></metadata><manifest>'
+      + '<item id="first" href="One%20page.xhtml"/>'
+      + '<item id="broken" href="bad.xhtml"/>'
+      + '<item id="last" href="100%.xhtml"/>'
+      + '</manifest><spine><itemref idref="first"/><itemref idref="broken"/><itemref idref="last"/></spine></package>',
+    'OPS/one page.xhtml': Buffer.from('<html><body><p>无 BOM 的 UTF-16 章节</p></body></html>', 'utf16le'),
+    'ops/bad.xhtml': Uint8Array.of(0xf0, 0xff),
+    'ops/100%.xhtml': '<html><body><p>末章依然完整。</p></body></html>',
+    'ops/unneeded-illustration.bin': [new Uint8Array(17 * 1024 * 1024), { level: 0 }],
+  })
+  assert.ok(epub.length > 16 * 1024 * 1024)
+  const book = parseEpub(epub)
+  assert.equal(book.title, '旧版图文书')
+  assert.deepEqual(book.missingSections, ['ops/bad.xhtml'])
+  assert.deepEqual(book.chapters.map(chapter => chapter.text), ['无 BOM 的 UTF-16 章节', '末章依然完整。'])
+})
+
+test('incomplete archives, image-only EPUB and encrypted text fail with distinct messages', () => {
+  assert.throws(() => parseEpub(strToU8('incomplete download')), /不是完整的 EPUB/)
+  const base = {
+    'book.opf': '<package><manifest><item id="page" href="page.xhtml"/></manifest><spine><itemref idref="page"/></spine></package>',
+    'page.xhtml': '<html><body><img alt="扫描页" src="page.jpg"/></body></html>',
+  }
+  assert.throws(() => parseEpub(epubArchive(base)), /扫描版 EPUB/)
+  assert.throws(() => parseEpub(epubArchive({
+    ...base,
+    'META-INF/encryption.xml': '<encryption><CipherReference URI="page.xhtml"/></encryption>',
+  })), /加密保护/)
 })
 
 test('a long text book fits a large model without the legacy source cap', async () => {
@@ -127,6 +164,34 @@ test('a truncated reading batch is split and every part is processed before synt
   assert.match(result.system, /Final line covered/)
 })
 
+test('retrying whole-book analysis reuses finished batches and still covers the final chapter', async () => {
+  const notesCache = new Map()
+  const chapters = Array.from({ length: 3 }, (_, index) => ({
+    title: 'Chapter ' + index, text: 'section evidence. '.repeat(450) + 'CHECKPOINT-' + index,
+  }))
+  let rateLimited = true
+  const requests = new Map()
+  const options = {
+    meta: { title: 'Fixture' }, chapters, question: 'Read it all', history: '',
+    knownContext: 16_384, maxOutput: 2048, notesCache, forceBatches: true, parallelism: 1,
+    signal: new AbortController().signal,
+    callModel: async (_question, { system }) => {
+      const index = Number(system.match(/CHECKPOINT-(\d+)/)?.[1])
+      requests.set(index, (requests.get(index) ?? 0) + 1)
+      if (index === 1 && rateLimited) {
+        throw Object.assign(new Error('Rate limited'), { code: 'rate_limit', retryAfterMs: 30_000 })
+      }
+      return 'notes for ' + index
+    },
+  }
+  await assert.rejects(bookContext(options), /已完成 1\/3 批/)
+  rateLimited = false
+  const result = await bookContext(options)
+  assert.equal(requests.get(0), 1)
+  assert.equal(requests.get(1), 2)
+  assert.match(result.system, /notes for 0[\s\S]*notes for 2/)
+})
+
 test('Worker distinguishes successful completion from EOF after partial text and retains usage', async t => {
   let upstreamFrames
   const calls = []
@@ -150,7 +215,7 @@ test('Worker distinguishes successful completion from EOF after partial text and
       }),
     }), env)
     assert.equal(response.status, 200)
-    return (await response.text()).trim().split('\n\n')
+    return (await response.text()).trim().split('\n\n').filter(frame => frame.startsWith('data: '))
       .map(frame => JSON.parse(frame.slice(6)))
   }
 
@@ -253,10 +318,10 @@ test('provider redirects are surfaced without forwarding the provider key', asyn
   const chat = await worker.fetch(new Request(origin + '/api/chat', {
     method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Hi' }] }),
   }), env)
-  for (const response of [models, chat]) {
-    assert.equal(response.status, 502)
-    assert.match((await response.json()).error, /要求跳转/)
-  }
+  assert.equal(models.status, 502)
+  assert.match((await models.json()).error, /要求跳转/)
+  assert.equal(chat.status, 200)
+  assert.match(await chat.text(), /"code":"provider_redirect","status":502/)
   assert.deepEqual(calls, ['https://models.example.com/v1/models', 'https://models.example.com/v1/chat/completions'])
 })
 

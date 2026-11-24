@@ -14,7 +14,8 @@ var MAX_SYSTEM_LENGTH = 2e6;
 var AUTH_COOKIE = "lumen_session";
 var SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 var FIRST_BYTE_TIMEOUT_MS = 15e4;
-var IDLE_TIMEOUT_MS = 6e4;
+var IDLE_TIMEOUT_MS = 12e4;
+const HEARTBEAT_MS = 12_000;
 function supportsReasoning(model) {
   const lower = model.toLowerCase();
   return lower.startsWith("deepseek-");
@@ -155,12 +156,43 @@ function deltaReasoning(event) {
   return "";
 }
 __name(deltaReasoning, "deltaReasoning");
-function upstreamErrorMessage(event) {
-  if (event.type === "error" && typeof event.message === "string") return event.message;
-  if (!event.error) return "";
-  return typeof event.error === "string" ? event.error : event.error.message || "OpenCode Go \u8FD4\u56DE\u9519\u8BEF\u3002";
+class ChatFailure extends Error {
+  constructor(message, code, status = 502, retryAfterMs) {
+    super(message);
+    this.code = code;
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
 }
-__name(upstreamErrorMessage, "upstreamErrorMessage");
+function providerFailure(data, status, retryAfter) {
+  const detail = data?.response?.error ?? data?.error ?? data;
+  const message = typeof detail === "string" ? detail : detail?.message;
+  const code = detail?.code ?? detail?.type ?? data?.response?.incomplete_details?.reason;
+  if (status === 401 || status === 403) {
+    return new ChatFailure("模型服务拒绝了请求，请检查 API Key 或模型权限。", "provider_auth");
+  }
+  if (/insufficient_quota|quota_exceeded|usage_limit_reached/i.test(code ?? "")) {
+    return new ChatFailure("该模型的使用额度已用完，请检查额度或选择其他模型。", "provider_quota");
+  }
+  if (status === 429 || /rate_limit|too_many_requests/i.test(code ?? "")) {
+    const ms = !retryAfter ? undefined : /^\d+$/.test(retryAfter)
+      ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+    return new ChatFailure("模型服务请求过多，请稍等片刻。", "rate_limit", 429,
+      Number.isFinite(ms) ? Math.max(0, ms) : undefined);
+  }
+  if (status === 413 || /context[_ ](?:length|window)|input[_ ]too[_ ]large|too many input tokens/i.test((code ?? "") + " " + (message ?? ""))) {
+    return new ChatFailure("这次输入超过了模型可处理的上下文。", "context_limit", 413);
+  }
+  if (status === 408 || status === 504 || /timeout/i.test(code ?? "")) {
+    return new ChatFailure("模型服务等待超时。", "upstream_timeout", 504);
+  }
+  if (status >= 500 || /overloaded|server_error|service_unavailable/i.test(code ?? "")) {
+    return new ChatFailure("模型服务暂时繁忙，请稍后重试。", "upstream_unavailable", 503);
+  }
+  return new ChatFailure(typeof message === "string" && message.trim()
+    ? message.slice(0, 350) : status ? "模型服务未完成这次回答（HTTP " + status + "）。" : "模型服务未完成这次回答。",
+    "upstream_error", status);
+}
 function withDeadline(work, ms, onTimeout) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => resolve(onTimeout), ms);
@@ -326,208 +358,232 @@ async function handleChat(request, env) {
   const abortUpstream = () => upstreamController.abort(request.signal.reason);
   request.signal.addEventListener("abort", abortUpstream, { once: true });
   if (request.signal.aborted) abortUpstream();
-  const connectionTimer = setTimeout(() => upstreamController.abort(new DOMException("模型服务连接超时。", "TimeoutError")), FIRST_BYTE_TIMEOUT_MS);
-  const cleanup = () => {
-    clearTimeout(connectionTimer);
-    request.signal.removeEventListener("abort", abortUpstream);
-  };
-  let upstream;
-  try {
-    const sessionHeaders = providerSessionHeaders(baseUrl, payload.session_id);
-    const fetchUpstream = body => fetch(providerChatUrl(baseUrl, endpointPath), {
-      redirect: "manual",
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        ...sessionHeaders
-      },
-      body,
-      signal: upstreamController.signal
-    });
-    upstream = await fetchUpstream(upstreamBody);
-    if (endpointPath === "/chat/completions" && [400, 422].includes(upstream.status)) {
-      const detail = await upstream.clone().text();
-      if (/stream_options|include_usage/i.test(detail)) {
-        void upstream.body?.cancel().catch(() => {});
-        const retryBody = JSON.parse(upstreamBody);
-        delete retryBody.stream_options;
-        upstream = await fetchUpstream(JSON.stringify(retryBody));
-      }
-    }
-  } catch (error) {
-    cleanup();
-    diag("chat.connect-failed", { model, keySource, keyId, error: error instanceof Error ? error.message : String(error), ms: Date.now() - startedAt });
-    if (request.signal.aborted) return json({ error: "请求已取消。" }, 499);
-    if (upstreamController.signal.reason?.name === "TimeoutError") return json({ error: "模型服务连接超时，请稍后重试。" }, 504);
-    return json({ error: "\u65E0\u6CD5\u8FDE\u63A5 OpenCode Go\u3002" }, 502);
-  }
-  if (providerRedirect(upstream)) {
-    cleanup();
-    void upstream.body?.cancel().catch(() => {});
-    return json({ error: "模型服务要求跳转，请在设置中填写模型 API 的实际地址。" }, 502);
-  }
-  if (!upstream.ok || !upstream.body) {
-    const body = await upstream.text().catch(() => "");
-    cleanup();
-    let message = "";
-    try {
-      const parsed = JSON.parse(body);
-      const raw = parsed.error;
-      const nested = typeof raw === "string" ? raw : raw && typeof raw === "object" ? raw.message : void 0;
-      if (typeof nested === "string" && nested) message = nested;
-    } catch {
-    }
-    if (upstream.status === 401) message = "模型服务拒绝了 API Key。请检查密钥是否有效，或在设置里重新连接。";
-    diag("chat.upstream-error", {
-      model,
-      endpoint: endpointPath,
-      keySource,
-      keyId,
-      upstreamStatus: upstream.status,
-      ms: Date.now() - startedAt
-    });
-    return json({ error: message.slice(0, 500) || `模型服务返回 HTTP ${upstream.status}。` }, 502);
-  }
-  clearTimeout(connectionTimer);
-  const encoder = new TextEncoder();
-  const sse = /* @__PURE__ */ __name((data) => encoder.encode(`data: ${JSON.stringify(data)}
-
-`), "sse");
+  const firstContentTimeout = system || maxTokens >= 32768 || (payload.reasoning_effort && payload.reasoning_effort !== "none")
+    ? 300_000 : FIRST_BYTE_TIMEOUT_MS;
   const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  let reader;
+  let pendingWrites = 0;
+  async function write(text) {
+    pendingWrites++;
+    try {
+      await writer.write(encoder.encode(text));
+    } finally {
+      pendingWrites--;
+    }
+  }
+  const sse = data => "data: " + JSON.stringify(data) + "\n\n";
+
+  // Flush the downstream response while the upstream is still preparing headers.
+  void write(": connected\n\n").catch(() => {});
+  const heartbeat = setInterval(() => {
+    if (!pendingWrites) {
+      void write(": keepalive\n\n").catch(() => {});
+    }
+  }, HEARTBEAT_MS);
+  const connectionTimer = setTimeout(
+    () => upstreamController.abort(new DOMException("连接模型服务超时。", "TimeoutError")),
+    FIRST_BYTE_TIMEOUT_MS,
+  );
+  void writer.closed.catch(() => {
+    upstreamController.abort();
+    void reader?.cancel().catch(() => {});
+  });
+
   void (async () => {
-    const writer = writable.getWriter();
-    void writer.closed.catch(() => upstreamController.abort());
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    let received = 0;
     let receivedText = 0;
-    const frames = [];
-    const parser = createParser({
-      maxBufferSize: 8 * 1024 * 1024,
-      onEvent: ({ data }) => frames.push(data),
-      onError(error) {
-        if (error.type === "max-buffer-size-exceeded") throw new Error("模型返回的单条数据过大。");
-      }
-    });
-    let failure = "";
-    let completed = false;
-    let truncated = false;
+    let receivedReasoning = 0;
     let eventCount = 0;
+    let failure;
     let usage = null;
     let ended = false;
-    let lastContentAt = Date.now();
-
+    let finishedAt = null;
+    let truncated = false;
+    let pending = [];
+    let eof = false;
     try {
-      while (true) {
-        const chunk = await withDeadline(
-          reader.read(),
-          Math.max(0, (received ? IDLE_TIMEOUT_MS : FIRST_BYTE_TIMEOUT_MS) - (Date.now() - lastContentAt)),
-          "timeout"
-        );
-        if (chunk === "timeout") {
-          failure = received ? "\u6A21\u578B\u670D\u52A1\u4E2D\u9014\u505C\u6B62\u54CD\u5E94\u3002" : "\u6A21\u578B\u670D\u52A1\u8D85\u65F6\u672A\u8FD4\u56DE\u5185\u5BB9\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002";
-          console.error("[chat] timeout", { model, endpoint: endpointPath, received, eventCount });
-          break;
+      upstreamController.signal.throwIfAborted();
+      const sessionHeaders = providerSessionHeaders(baseUrl, payload.session_id);
+      const fetchUpstream = body => fetch(providerChatUrl(baseUrl, endpointPath), {
+        redirect: "manual",
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + apiKey,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...sessionHeaders
+        },
+        body,
+        signal: upstreamController.signal
+      });
+      let upstream = await fetchUpstream(upstreamBody);
+      let detail;
+      if (endpointPath === "/chat/completions" && [400, 422].includes(upstream.status)) {
+        detail = await upstream.text();
+        if (/stream_options|include_usage/i.test(detail)) {
+          const retryBody = JSON.parse(upstreamBody);
+          delete retryBody.stream_options;
+          upstream = await fetchUpstream(JSON.stringify(retryBody));
+          detail = undefined;
         }
-        parser.feed(chunk.done ? decoder.decode() + "\n\n" : decoder.decode(chunk.value, { stream: true }));
-        for (const data of frames.splice(0)) {
-          if (!data) continue;
-          if (data === "[DONE]") {
-            if (!usesAnthropicEndpoint && !usesResponses) completed = true;
-            ended = true;
-            break;
-          }
-          let parsed;
-          try {
-            parsed = JSON.parse(data);
-          } catch (parseError) {
-            console.error("[chat] SSE JSON.parse failed", { model, endpoint: endpointPath, error: parseError instanceof Error ? parseError.message : String(parseError) });
-            throw new Error("模型返回的数据格式异常，回答未完整接收。");
-          }
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("模型返回的数据格式异常。");
-          eventCount += 1;
-          usage = parseProviderUsage(parsed, usage);
-
-          const errorMessage = upstreamErrorMessage(parsed);
-          if (errorMessage) throw new Error(errorMessage);
-          if (usesResponses) {
-            completed ||= parsed.type === "response.completed";
-            ended ||= parsed.type === "response.completed";
-          } else if (usesAnthropicEndpoint) {
-            completed ||= parsed.type === "message_stop";
-            ended ||= parsed.type === "message_stop";
-            const reason = parsed.type === "message_delta" ? parsed.delta?.stop_reason : void 0;
-            truncated ||= reason === "max_tokens" || reason === "model_context_window_exceeded";
-            if (reason === "tool_use") throw new Error("模型返回了工具调用，当前对话无法完成这条回答。");
-            if (reason === "pause_turn") throw new Error("模型暂停了回答，当前内容尚未完成。请重试。");
-          } else {
-            const reason = parsed.choices?.[0]?.finish_reason;
-            completed ||= typeof reason === "string" && reason.length > 0;
-            truncated ||= reason === "length";
-            if (reason === "content_filter") throw new Error("模型服务因内容限制中止了回答。");
-            if (reason === "tool_calls" || reason === "function_call") throw new Error("模型返回了工具调用，当前对话无法完成这条回答。");
-          }
-          if (parsed.type === "response.incomplete" && parsed.response?.incomplete_details?.reason === "max_output_tokens") {
-            truncated = true;
-            completed = true;
-            ended = true;
-          } else if (parsed.type === "response.failed" || parsed.type === "response.incomplete") {
-            throw new Error(parsed.response?.error?.message || "模型没有完成整条回答。");
-          }
-          const text = parsed.type === "response.output_text.delta" || parsed.type === "response.refusal.delta" ? parsed.delta : deltaText(parsed);
-          if (text) {
-            lastContentAt = Date.now();
-            received += text.length;
-            receivedText += text.length;
-            await writer.write(sse({ type: "text", text }));
-          }
-          const reasoning = parsed.type === "response.reasoning_summary_text.delta" ? parsed.delta : deltaReasoning(parsed);
-          if (reasoning) {
-            lastContentAt = Date.now();
-            received += reasoning.length;
-            await writer.write(sse({ type: "reasoning", text: reasoning }));
-          }
-        }
-        if (chunk.done || ended) break;
       }
+      if (providerRedirect(upstream)) {
+        void upstream.body?.cancel().catch(() => {});
+        throw new ChatFailure("模型服务要求跳转，请在设置中填写模型 API 的实际地址。", "provider_redirect");
+      }
+      if (!upstream.ok) {
+        let data;
+        try { data = JSON.parse(detail ?? await upstream.text()); } catch {}
+        throw providerFailure(data, upstream.status, upstream.headers.get("Retry-After"));
+      }
+      if (!upstream.body) throw new ChatFailure("模型服务没有返回内容。", "upstream_interrupted");
+      if (/^(application\/json|text\/html)\b/i.test(upstream.headers.get("Content-Type") ?? "")) {
+        const data = await upstream.json().catch(() => null);
+        if (data?.error) throw providerFailure(data);
+        throw new ChatFailure("模型接口没有返回流式回复，请检查模型服务地址。", "bad_stream");
+      }
+
+      clearTimeout(connectionTimer);
+      reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let lastContentAt = Date.now();
+      const parser = createParser({
+        maxBufferSize: 8 * 1024 * 1024,
+        onError(error) {
+          if (error.type === "max-buffer-size-exceeded") throw new ChatFailure("模型返回的单条数据过大。", "bad_stream");
+        },
+        onEvent({ data }) {
+          if (ended || !data) return;
+          if (data === "[DONE]") {
+            ended = true;
+            if (!usesAnthropicEndpoint && !usesResponses) finishedAt ??= Date.now();
+            return;
+          }
+          let event;
+          try { event = JSON.parse(data); } catch {
+            throw eof
+              ? new ChatFailure("模型连接在返回数据时中断。", "upstream_interrupted")
+              : new ChatFailure("模型返回的数据格式异常。", "bad_stream");
+          }
+          if (!event || typeof event !== "object" || Array.isArray(event)) {
+            throw new ChatFailure("模型返回的数据格式异常。", "bad_stream");
+          }
+          eventCount++;
+          usage = parseProviderUsage(event, usage);
+          if (event.type === "error" || event.error || event.type === "response.failed") throw providerFailure(event);
+
+          if (usesResponses) {
+            if (event.type === "response.completed") {
+              finishedAt = Date.now();
+              ended = true;
+            }
+            if (event.type === "response.incomplete") {
+              const reason = event.response?.incomplete_details?.reason;
+              if (reason !== "max_output_tokens") throw providerFailure(event);
+              truncated = true;
+              ended = true;
+            }
+          } else if (usesAnthropicEndpoint) {
+            if (event.type === "message_stop") {
+              finishedAt = Date.now();
+              ended = true;
+            }
+            const reason = event.type === "message_delta" ? event.delta?.stop_reason : undefined;
+            truncated ||= reason === "max_tokens" || reason === "model_context_window_exceeded";
+            if (reason === "tool_use") throw new ChatFailure("模型返回了工具调用，当前对话无法完成这条回答。", "tool_call");
+            if (reason === "pause_turn") throw new ChatFailure("模型暂停了回答。", "upstream_interrupted");
+          } else {
+            const reason = event.choices?.[0]?.finish_reason;
+            if (reason === "content_filter") throw new ChatFailure("模型服务因内容限制中止了回答。", "content_filter");
+            if (reason === "tool_calls" || reason === "function_call") {
+              throw new ChatFailure("模型返回了工具调用，当前对话无法完成这条回答。", "tool_call");
+            }
+            if (reason === "stop" || reason === "length") finishedAt ??= Date.now();
+            truncated ||= reason === "length";
+          }
+
+          const text = event.type === "response.output_text.delta" || event.type === "response.refusal.delta" ? event.delta : deltaText(event);
+          const reasoning = event.type === "response.reasoning_summary_text.delta" ? event.delta : deltaReasoning(event);
+          if (typeof text === "string" && text) {
+            lastContentAt = Date.now();
+            receivedText += text.length;
+            pending.push(sse({ type: "text", text }));
+          }
+          if (typeof reasoning === "string" && reasoning) {
+            lastContentAt = Date.now();
+            receivedReasoning += reasoning.length;
+            pending.push(sse({ type: "reasoning", text: reasoning }));
+          }
+        },
+      });
+
+      while (!ended) {
+        const received = receivedText || receivedReasoning;
+        const deadline = finishedAt === null
+          ? lastContentAt + (received ? IDLE_TIMEOUT_MS : firstContentTimeout)
+          : finishedAt + 1500; // A completions provider can send usage after finish_reason.
+        const remaining = deadline - Date.now();
+        const chunk = remaining > 0 ? await withDeadline(reader.read(), remaining, "timeout") : "timeout";
+        if (chunk === "timeout") {
+          if (finishedAt !== null) break;
+          throw new ChatFailure(received
+            ? "模型长时间没有继续输出。"
+            : "模型长时间没有返回内容，可能正在排队或处理较长的输入。", "upstream_timeout", 504);
+        }
+        eof = chunk.done;
+        parser.feed(eof ? decoder.decode() + "\n\n" : decoder.decode(chunk.value, { stream: true }));
+        if (pending.length) {
+          const data = pending.join("");
+          pending = [];
+          await write(data);
+        }
+        if (eof) break;
+      }
+
+      if (truncated) throw new ChatFailure("已达到模型本次输出上限。", "output_limit");
+      if (finishedAt === null) throw new ChatFailure("模型连接中断，回答未完整返回。", "upstream_interrupted");
+      if (!receivedText) throw new ChatFailure("模型没有返回正文。", "upstream_interrupted");
     } catch (error) {
-      failure = error instanceof Error ? error.message : "\u6D41\u5F0F\u8FDE\u63A5\u4E2D\u65AD";
+      if (request.signal.aborted || (upstreamController.signal.aborted && upstreamController.signal.reason?.name !== "TimeoutError")) return;
+      failure = error instanceof ChatFailure ? error : upstreamController.signal.reason?.name === "TimeoutError"
+        ? new ChatFailure("连接模型服务超时，请稍后重试。", "upstream_timeout", 504)
+        : new ChatFailure("模型服务连接中断。", "upstream_interrupted");
     } finally {
-      void reader.cancel().catch(() => void 0);
+      clearTimeout(connectionTimer);
+      clearInterval(heartbeat);
+      request.signal.removeEventListener("abort", abortUpstream);
+      void reader?.cancel().catch(() => {});
       upstreamController.abort();
-      cleanup();
+      // Stopping from the client also releases a writer with a pending heartbeat.
+      if (request.signal.aborted) void writer.abort(request.signal.reason).catch(() => {});
     }
-    if (!failure && truncated) failure = "回答达到模型输出上限，当前内容未完整生成。";
-    if (!failure && receivedText && !completed) failure = "上游连接中断，回答未完整返回。请重试。";
-    if (!receivedText && !failure) {
-      failure = "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u4EFB\u4F55\u5185\u5BB9\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002";
-      console.error("[chat] empty reply", { model, endpoint: endpointPath, eventCount });
-    }
+
     diag("chat.done", {
-      model,
-      endpoint: endpointPath,
-      keySource,
-      keyId,
-      eventCount,
-      textChars: receivedText,
-      reasoningChars: received - receivedText,
-      failure: failure || null,
-      ms: Date.now() - startedAt
+      model, endpoint: endpointPath, keySource, keyId, eventCount,
+      textChars: receivedText, reasoningChars: receivedReasoning,
+      failure: failure?.code ?? null, ms: Date.now() - startedAt
     });
     try {
       const reported = usageEvent(usage);
-      if (reported) await writer.write(sse(reported));
-      if (failure) await writer.write(sse({ type: "error", error: failure, code: truncated ? "output_limit" : void 0 }));
-      await writer.write(sse({ type: "done" }));
+      if (reported) pending.push(sse(reported));
+      if (failure) pending.push(sse({
+        type: "error", error: failure.message, code: failure.code,
+        status: failure.status, retryAfterMs: failure.retryAfterMs
+      }));
+      pending.push(sse({ type: "done" }));
+      await write(pending.join(""));
       await writer.close();
     } catch {
-      void writer.abort().catch(() => void 0);
+      void writer.abort().catch(() => {});
     }
   })();
   return new Response(readable, {
-    headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform" }
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+      "X-Accel-Buffering": "no"
+    }
   });
 }
 __name(handleChat, "handleChat");

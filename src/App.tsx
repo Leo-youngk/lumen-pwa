@@ -1,4 +1,4 @@
-import { Activity, useCallback, useRef, useState } from 'react'
+import { Activity, useCallback, useEffect, useRef, useState } from 'react'
 import { ChatScreen } from '@/screens/ChatScreen'
 import { HistoryScreen } from '@/screens/HistoryScreen'
 import { ModelSheet, ScopeSheet } from '@/screens/ModelSheet'
@@ -8,7 +8,7 @@ import { Sheet } from '@/components/Sheet'
 import { SideDrawer } from '@/components/SideDrawer'
 import { List, Row } from '@/components/List'
 import { Icon } from '@/components/Icon'
-import { LumenClient } from '@/lib/api'
+import { importEpub, prepareEpubImporter } from '@/lib/epub'
 import { isPinned, newId, putBook, saveConversations, sortConversations, type BookRecord } from '@/lib/store'
 import { useLumen } from '@/state/LumenContext'
 import { useTheme, useViewport } from '@/lib/viewport'
@@ -32,13 +32,17 @@ export function App() {
   const [models, setModels] = useState(false)
   const [scope, setScope] = useState(false)
   const [options, setOptions] = useState(false)
-  const [uploading, setUploading] = useState(false)
+  const [importStatus, setImportStatus] = useState('')
+  const uploading = Boolean(importStatus)
   const uploadInFlight = useRef(false)
   const [uploadError, setUploadError] = useState('')
 
   useViewport()
   useTheme(settings.theme)
   useServiceWorker(status === 'checking' || streaming || uploading, () => saveConversations(conversations))
+  useEffect(() => {
+    if (status === 'authenticated') prepareEpubImporter()
+  }, [status])
 
   const navigate = useCallback((next: Route) => {
     if (next === 'settings' && route !== 'settings') settingsReturn.current = route
@@ -64,11 +68,10 @@ export function App() {
     if (uploadInFlight.current || streaming) return
     const revision = navigationRevision.current
     uploadInFlight.current = true
-    setUploading(true)
+    setImportStatus('正在本机导入 EPUB…')
     setUploadError('')
     try {
-      const client = new LumenClient()
-      const result = await client.uploadEpub(file)
+      const result = await importEpub(file, (done, total) => setImportStatus('正在提取正文 ' + done + '/' + total + '…'))
       const book: BookRecord = {
         id: newId(),
         title: result.title || file.name.replace(/\.epub$/i, ''),
@@ -79,7 +82,12 @@ export function App() {
         missingSections: result.missingSections,
         focusChapter: null,
       }
-      await putBook(book, result.chapters)
+      setImportStatus('正在保存书籍…')
+      try {
+        await putBook(book, result.chapters)
+      } catch {
+        throw new Error('书籍已解析，但本机存储不可用或空间不足，未能保存。请释放存储空间后重试。')
+      }
       if (targetId) {
         updateConversation(targetId, { book })
       } else {
@@ -88,10 +96,10 @@ export function App() {
         if (stillOnHome) navigate('chat')
       }
     } catch (failure) {
-      setUploadError(failure instanceof Error ? failure.message : 'EPUB 解析失败。')
+      setUploadError(failure instanceof Error ? failure.message : '未能导入 EPUB，请重新选择文件。')
     } finally {
       uploadInFlight.current = false
-      setUploading(false)
+      setImportStatus('')
     }
   }, [navigate, startConversation, streaming, updateConversation])
 
@@ -149,7 +157,7 @@ export function App() {
               onOpenScope={() => setScope(true)}
               onNew={newConversation}
               onUpload={file => void upload(file, activeId)}
-              uploading={uploading}
+              importStatus={importStatus}
               onSent={() => navigate('chat')}
             />
           </Activity>

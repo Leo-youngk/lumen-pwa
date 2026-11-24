@@ -11,7 +11,9 @@ import {
 import { ApiError, LumenClient, type ModelOption } from '@/lib/api'
 import { clearChatDraft } from '@/hooks/useChatDraft'
 import { resolveOutputLimit } from '@/lib/modelLimits'
+import { continuationQuestion, continuationWriter } from '@/lib/continuation'
 import { bookContext, type ReadingProgress } from '../../client/features.js'
+import { retryModel } from '../../client/retry-model.js'
 import {
   DEFAULT_SETTINGS,
   KEYS,
@@ -76,6 +78,7 @@ interface LumenContextValue {
   send: (text: string, quote?: string) => Promise<void>
   stop: () => void
   retry: () => Promise<void>
+  continueAnswer: () => Promise<void>
 
   usage: UsageState
 
@@ -160,6 +163,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const modelRef = useRef(model)
   modelRef.current = model
   const abortRef = useRef<AbortController | null>(null)
+  const bookNotes = useRef<{ key: string; notes: Map<string, string>; forceBatches: boolean } | null>(null)
   const client = useMemo(
     () => new LumenClient('', { headers: () => providerHeaders(settingsRef.current) }),
     [],
@@ -332,6 +336,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
 
   const clearAll = useCallback(() => {
     abortRef.current?.abort()
+    bookNotes.current = null
     setConversations([])
     clearChatDraft()
     openConversation(null)
@@ -360,10 +365,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   )
 
   const run = useCallback(
-    async (conversation: Conversation, question: string, replaceId?: string) => {
+    async (conversation: Conversation, user: Message, replaceId?: string, resume = false) => {
       if (abortRef.current) return
 
       const conversationId = conversation.id
+      const question = modelContent(user)
       const selectedModel = models.find(option => option.id === conversation.model)
         ?? models.find(option => option.id === modelRef.current) ?? models[0]
       const selectedId = selectedModel?.id ?? conversation.model
@@ -380,15 +386,16 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       setStreamingId(conversationId)
       setError(null)
 
-      const answerId = newId()
       const previousAnswer = conversation.messages.find(message => message.id === replaceId)
-      const answer: Message = {
-        id: answerId,
+      const continuing = resume && previousAnswer?.incomplete && Boolean(previousAnswer.content.trim())
+      const answer: Message = continuing && previousAnswer ? previousAnswer : {
+        id: newId(),
         role: 'assistant',
         content: '',
         incomplete: true,
         createdAt: Date.now(),
       }
+      const answerId = answer.id
       setConversations(current =>
         current.map(item =>
           item.id === conversationId
@@ -402,6 +409,8 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         ),
       )
 
+      let answerStarted = false
+      let receivedAnswer = false
       const chat = async (body: Record<string, unknown>, signal: AbortSignal, streamAnswer: boolean) => {
         let report: UsageReport | null = null
         let output = ''
@@ -422,6 +431,14 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           frame ??= requestAnimationFrame(flush)
           flushTimer ??= window.setTimeout(flush, 200)
         }
+        function appendText(text: string) {
+          output += text
+          if (streamAnswer) {
+            receivedAnswer ||= Boolean(text.trim())
+            scheduleFlush()
+          }
+        }
+        const continuation = streamAnswer && continuing ? continuationWriter(answer.content, appendText) : undefined
 
         try {
           await requestClient.chat({
@@ -434,11 +451,12 @@ export function LumenProvider({ children }: { children: ReactNode }) {
               const outputTokens = event.output ?? 0
               report = { input, output: outputTokens, total: event.total ?? input + outputTokens }
             } else if (event.type === 'text') {
-              output += event.text
-              if (streamAnswer) {
+              if (streamAnswer && !answerStarted) {
+                answerStarted = true
                 setReadingProgress(null)
-                scheduleFlush()
               }
+              if (continuation) continuation.push(event.text)
+              else appendText(event.text)
             } else if (streamAnswer && event.type === 'reasoning') {
               reasoning += event.text
               scheduleFlush()
@@ -446,6 +464,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           }, signal)
           return output
         } finally {
+          continuation?.finish()
           if (streamAnswer) flush()
           setUsage(recordUsage(report))
         }
@@ -454,12 +473,34 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       try {
         const messages = conversation.messages
           .filter(item => item.id !== replaceId && !item.incomplete && item.content.trim())
-          .map(item => ({ role: item.role, content: modelContent(item), reasoning_content: item.reasoning }))
-        let system: string | undefined
+          .map(item => ({
+            role: item.role,
+            content: continuing && item.id === user.id
+              ? continuationQuestion(question, answer.content, selectedModel?.contextTokens) : modelContent(item),
+            reasoning_content: item.reasoning,
+          }))
         const modelLimit = selectedModel?.outputTokens ?? Infinity
         let maxOutput = requestedOutput === undefined ? undefined : Math.min(requestedOutput, modelLimit)
-        if (conversation.book) {
-          const book = await getBook(conversation.book)
+        const writeAnswer = async (system?: string, splitInsteadOfRetry?: (failure: unknown) => boolean) => {
+          setReadingProgress({ stage: 'answer', done: 0, total: 0 })
+          await retryModel(
+            () => {
+              answerStarted = false
+              return chat({ messages, system, max_tokens: maxOutput }, controller.signal, true)
+            },
+            controller.signal,
+            {
+              canRetry: failure => !answerStarted && !splitInsteadOfRetry?.(failure),
+              onRetry: () => setReadingProgress({ stage: 'retry', done: 0, total: 0 }),
+            },
+          )
+          if (!receivedAnswer) {
+            throw new Error(continuing ? '模型没有续写出新的正文，已保留原回答。' : '模型没有返回可阅读的正文。')
+          }
+        }
+        const bookRecord = conversation.book
+        if (bookRecord) {
+          const book = await getBook(bookRecord)
           if (!book) throw new Error('本设备没有这本书的正文，请重新上传 EPUB。')
           const context = selectedModel?.contextTokens
           const window = context ?? 16_384
@@ -467,49 +508,78 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           const available = Math.floor(window * .9) - new TextEncoder().encode(history).length - 1500
           const readingLimit = available - Math.max(3000, Math.min(48_000, Math.floor(available / 2)))
           if (readingLimit < 16) throw new Error('上下文空间不足，请清理对话历史或选择上下文更大的模型。')
-          maxOutput = Math.min(maxOutput ?? 8_192, modelLimit, readingLimit)
-          const selection = await bookContext({
+          const bookOutput = Math.min(maxOutput ?? 8_192, modelLimit, readingLimit)
+          maxOutput = bookOutput
+          const key = JSON.stringify([
+            conversationId, user.id, book.meta.id, bookRecord.focusChapter ?? null,
+            selectedId, selectedModel?.protocol, context, modelLimit, readingEffort, config,
+          ])
+          if (bookNotes.current?.key !== key) {
+            bookNotes.current = { key, notes: new Map(), forceBatches: false }
+          }
+          const reading = bookNotes.current
+          const prepareBook = () => bookContext({
             meta: book.meta,
             chapters: book.chapters,
-            focus: conversation.book.focusChapter,
+            focus: bookRecord.focusChapter,
             question,
             history,
             knownContext: context,
-            maxOutput,
+            maxOutput: bookOutput,
             modelOutput: selectedModel?.outputTokens,
             progress: setReadingProgress,
             signal: controller.signal,
+            notesCache: reading.notes,
+            forceBatches: reading.forceBatches,
+            parallelism: /(?:^|-)free$/i.test(selectedId) ? 1 : 2,
             callModel: (prompt, options, signal) => chat({
               system: options.system,
               messages: [{ role: 'user', content: prompt }],
               max_tokens: options.maxTokens,
             }, signal, false),
           })
-          system = selection.system
-        } else if (maxOutput !== undefined && selectedModel?.contextTokens) {
-          const encoder = new TextEncoder()
-          const input = messages.reduce((total, message) =>
-            total + encoder.encode(message.content + (message.reasoning_content ?? '')).length + 12, 1024)
-          maxOutput = Math.min(maxOutput, selectedModel.contextTokens - input)
-          if (maxOutput < 16) throw new Error('对话历史占用了模型的上下文，请新建对话后重试。')
+          const selection = await prepareBook()
+          const shouldSplit = (failure: unknown) => !answerStarted && selection.mode === 'direct'
+            && failure instanceof ApiError
+            && (failure.code === 'context_limit' || (selection.system.length > 32_000
+              && (failure.code === 'upstream_timeout' || failure.code === 'upstream_interrupted')))
+          try {
+            await writeAnswer(selection.system, shouldSplit)
+          } catch (failure) {
+            if (!shouldSplit(failure)) throw failure
+            reading.forceBatches = true
+            const reduced = await prepareBook()
+            await writeAnswer(reduced.system)
+          }
+        } else {
+          if (maxOutput !== undefined && selectedModel?.contextTokens) {
+            const encoder = new TextEncoder()
+            const input = messages.reduce((total, message) =>
+              total + encoder.encode(message.content + (message.reasoning_content ?? '')).length + 12, 1024)
+            maxOutput = Math.min(maxOutput, selectedModel.contextTokens - input)
+            if (maxOutput < 16) throw new Error('对话历史占用了模型的上下文，请新建对话后重试。')
+          }
+          await writeAnswer()
         }
-        await chat({ messages, system, max_tokens: maxOutput }, controller.signal, true)
         setConversations(current => current.map(item => item.id !== conversationId ? item : {
           ...item,
           messages: item.messages.map(message => message.id === answerId ? { ...message, incomplete: false } : message),
         }))
       } catch (failure) {
-        if (failure instanceof ApiError && failure.status === 401) setStatus('unauthenticated')
+        const cause = failure instanceof Error && failure.cause instanceof ApiError ? failure.cause : failure
+        if (cause instanceof ApiError && cause.status === 401) setStatus('unauthenticated')
         if (!controller.signal.aborted) {
           setError({ id: conversationId, message:
             (failure instanceof Error
               ? failure.message
-              : '请求失败。') + (previousAnswer && !previousAnswer.incomplete ? ' 已保留上一次的完整回答。' : ''),
+              : '请求失败。') + (previousAnswer && !previousAnswer.incomplete
+              ? ' 已保留上一次的完整回答。'
+              : receivedAnswer || continuing ? ' 已保留已生成的正文。' : ''),
           })
         }
         setConversations(current => current.map(item => item.id !== conversationId ? item : {
           ...item,
-          messages: previousAnswer && !previousAnswer.incomplete
+          messages: previousAnswer && !continuing && (!previousAnswer.incomplete || !receivedAnswer)
             ? item.messages.map(message => message.id === answerId ? previousAnswer : message)
             : item.messages.filter(message => message.id !== answerId || message.content.trim()),
         }))
@@ -562,7 +632,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       setConversations(conversationsRef.current)
       openConversation(conversation.id)
 
-      await run(conversation, modelContent(userMessage))
+      await run(conversation, userMessage)
     },
     [openConversation, run],
   )
@@ -571,14 +641,17 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     abortRef.current?.abort()
   }, [])
 
-  const retry = useCallback(async () => {
+  const repeatAnswer = useCallback(async (resume: boolean) => {
     const conversation = conversationsRef.current.find(item => item.id === activeIdRef.current)
     if (!conversation) return
     const lastUser = [...conversation.messages].reverse().find(item => item.role === 'user')
     if (!lastUser) return
     const last = conversation.messages.at(-1)
-    await run(conversation, modelContent(lastUser), last?.role === 'assistant' ? last.id : undefined)
+    if (resume && (last?.role !== 'assistant' || !last.incomplete || !last.content.trim())) return
+    await run(conversation, lastUser, last?.role === 'assistant' ? last.id : undefined, resume)
   }, [run])
+  const retry = useCallback(() => repeatAnswer(false), [repeatAnswer])
+  const continueAnswer = useCallback(() => repeatAnswer(true), [repeatAnswer])
 
   /* ----------------------------------------------------------------- auth */
 
@@ -635,6 +708,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     send,
     stop,
     retry,
+    continueAnswer,
     usage,
     signIn,
     syncCode,

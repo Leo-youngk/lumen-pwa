@@ -1,3 +1,5 @@
+import { retryModel } from './retry-model.js'
+
 const usageKey = 'lumen.usage.v1'
 const listeners = new Set()
 const emptyUsage = Object.freeze({ input: 0, output: 0, total: 0, unreported: 0 })
@@ -23,32 +25,6 @@ export function recordUsage(usage) {
 }
 export const tokenLabel = number => new Intl.NumberFormat('zh-CN').format(number)
 
-export async function uploadEpub(file) {
-  if (file.size > 16 * 1024 * 1024) throw new Error('EPUB 最大支持 16 MB。')
-  let response
-  try {
-    response = await fetch('/api/epub', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/epub+zip' },
-      body: file,
-      signal: AbortSignal.timeout(115000),
-    })
-  } catch {
-    throw new Error('电子书上传超时或网络中断，请重试。')
-  }
-  const book = await response.json().catch(() => null)
-  if (!response.ok || !book?.chapters?.length) {
-    throw new Error(book?.error ?? '电子书转换失败，请重试。')
-  }
-  return {
-    ...book,
-    markdown: true,
-    id: 'book_' + crypto.randomUUID(),
-    title: book.title || file.name.replace(/\.epub$/i, ''),
-  }
-}
-
 export function downloadBook(meta, chapters) {
   const text = [
     '# ' + meta.title,
@@ -72,19 +48,16 @@ function splitByBytes(text, budget) {
   const sections = []
   let offset = 0
   while (offset < text.length) {
-    const remaining = text.slice(offset)
-    if (byteLength(remaining) <= budget) {
-      sections.push(remaining)
-      break
-    }
+    const remaining = text.slice(offset, offset + budget)
     let low = 1
-    let high = Math.min(budget, remaining.length)
+    let high = remaining.length
+    if (byteLength(remaining) <= budget) low = high
     while (low < high) {
       const middle = Math.ceil((low + high) / 2)
       if (byteLength(remaining.slice(0, middle)) <= budget) low = middle
       else high = middle - 1
     }
-    const newline = remaining.lastIndexOf('\n', low - 1)
+    const newline = offset + low === text.length ? -1 : remaining.lastIndexOf('\n', low - 1)
     let end = newline > low * .73 ? newline + 1 : low
     // Keep surrogate pairs intact when a long paragraph has no break.
     if (/[\uD800-\uDBFF]/.test(remaining[end - 1])) end--
@@ -112,14 +85,14 @@ function groupParts(parts, budget) {
   return batches
 }
 
-async function mapLimited(batches, task, signal, progress) {
+async function mapLimited(batches, task, signal, parallelism, progress) {
   const work = new AbortController()
   const combined = signal ? AbortSignal.any([signal, work.signal]) : work.signal
   let index = 0
   let finished = 0
   const results = new Array(batches.length)
   try {
-    await Promise.all(Array.from({ length: Math.min(2, batches.length) }, async () => {
+    await Promise.all(Array.from({ length: Math.min(parallelism, batches.length) }, async () => {
       while (index < batches.length) {
         combined.throwIfAborted()
         const current = index++
@@ -135,7 +108,10 @@ async function mapLimited(batches, task, signal, progress) {
   return results
 }
 
-export async function bookContext({ meta, chapters, focus, question, history, knownContext, maxOutput, modelOutput, callModel, progress, signal }) {
+export async function bookContext({
+  meta, chapters, focus, question, history, knownContext, maxOutput, modelOutput,
+  callModel, progress, signal, notesCache = new Map(), forceBatches = false, parallelism = 2,
+}) {
   if (focus != null && !chapters[focus]) throw new Error('找不到选中的章节，请重新选择阅读范围。')
   const selected = focus == null ? chapters.map((_, index) => index) : [focus]
   const scope = focus == null ? '全书' : '所选章节'
@@ -151,9 +127,9 @@ export async function bookContext({ meta, chapters, focus, question, history, kn
     text: chapters[index].text,
   }))
   const direct = source.map(({ title, text }) => title + '\n' + text).join('\n\n')
-  if (byteLength(direct) + byteLength(prompt) <= answerBudget) {
+  if (!forceBatches && byteLength(direct) + byteLength(prompt) <= answerBudget) {
     progress?.({ done: 1, total: 1, stage: 'direct' })
-    return { system: prompt + '\n\n' + direct, selected }
+    return { system: prompt + '\n\n' + direct, selected, mode: 'direct' }
   }
 
   const notesOutput = Math.min(modelOutput ?? 4096, 4096, Math.floor(context / 4))
@@ -165,18 +141,22 @@ export async function bookContext({ meta, chapters, focus, question, history, kn
   })
   const batches = groupParts(parts, analysisBudget)
   const readingPrompt = `${prompt}\n依照原文顺序逐段阅读这一批。记录与问题有关的事实、论证和具体细节，保留内部章节位置。对于梳理全书等问题，覆盖本批次中的每一节。只写简明的阅读笔记。`
+  async function cachedNotes(system, maxTokens, workSignal) {
+    const key = maxTokens + ':' + system
+    if (notesCache.has(key)) return notesCache.get(key)
+    const notes = await retryModel(() => callModel(question, { maxTokens, system }, workSignal), workSignal)
+    workSignal.throwIfAborted()
+    if (!notes.trim()) throw new Error('模型没有返回阅读笔记。')
+    notesCache.set(key, notes)
+    return notes
+  }
   async function readBatch(sourceText, workSignal) {
     try {
-      const notes = await callModel(question, {
-        maxTokens: notesOutput,
-        system: `${readingPrompt}\n\n${sourceText}`,
-      }, workSignal)
-      if (!notes.trim()) throw new Error('模型未返回这批原文的阅读结果。请重试。')
-      return notes
+      return await cachedNotes(readingPrompt + '\n\n' + sourceText, notesOutput, workSignal)
     } catch (error) {
       workSignal.throwIfAborted()
       const size = byteLength(sourceText)
-      if (error?.code !== 'output_limit' || size < 1600) throw error
+      if (!['output_limit', 'context_limit'].includes(error?.code) || size < 1600) throw error
       const notes = []
       for (const fragment of splitByBytes(sourceText, Math.ceil(size / 2))) {
         notes.push(await readBatch(fragment, workSignal))
@@ -184,24 +164,37 @@ export async function bookContext({ meta, chapters, focus, question, history, kn
       return notes.join('\n\n')
     }
   }
-  progress?.({ done: 0, total: batches.length, stage: 'read' })
-  let notes = await mapLimited(batches, (batch, _index, workSignal) => readBatch(batch.join('\n\n'), workSignal),
-    signal, (done, total) => progress?.({ done, total, stage: 'read' }))
+  async function runBatches(inputs, task, stage) {
+    let completed = 0
+    progress?.({ done: 0, total: inputs.length, stage })
+    try {
+      return await mapLimited(inputs, task, signal, parallelism, (done, total) => {
+        completed = done
+        progress?.({ done, total, stage })
+      })
+    } catch (error) {
+      signal.throwIfAborted()
+      const label = stage === 'read' ? '读取原文' : '汇总笔记'
+      const detail = error instanceof Error ? error.message : '模型请求失败。'
+      throw new Error(label + '暂停，已完成 ' + completed + '/' + inputs.length + ' 批。' + detail, { cause: error })
+    }
+  }
+  let notes = await runBatches(batches, (batch, _index, workSignal) => readBatch(batch.join('\n\n'), workSignal), 'read')
   const mergePrompt = `以下是逐段阅读${scope}正文后生成的笔记。结合各段信息回答，保留能支撑结论的细节。\n\n`
   const finalNotesBudget = answerBudget - byteLength(prompt + mergePrompt) - 200
   const mergeBudget = Math.min(analysisBudget, finalNotesBudget)
   while (byteLength(notes.join('\n\n')) > finalNotesBudget) {
     const inputs = groupParts(notes.flatMap(note => splitByBytes(note, mergeBudget - 4)), mergeBudget)
     const previous = byteLength(notes.join('\n\n'))
-    notes = await mapLimited(inputs, (batch, _index, workSignal) => callModel(question, {
-      maxTokens: Math.min(notesOutput, Math.floor(mergeBudget / 8)),
-      system: mergePrompt + '只压缩笔记，保留独立论点、具体细节和内部位置。\n\n' + batch.join('\n\n'),
-    }, workSignal), signal, (done, total) => progress?.({ done, total, stage: 'merge' }))
+    notes = await runBatches(inputs, (batch, _index, workSignal) => cachedNotes(
+      mergePrompt + '只压缩笔记，保留独立论点、具体细节和内部位置。\n\n' + batch.join('\n\n'),
+      Math.min(notesOutput, Math.floor(mergeBudget / 8)), workSignal,
+    ), 'merge')
     if (byteLength(notes.join('\n\n')) >= previous) {
       throw new Error('全书已逐段分析，但汇总超出当前模型上下文。请换用上下文更大的模型。')
     }
   }
-  return { system: prompt + '\n\n' + mergePrompt + notes.join('\n\n'), selected }
+  return { system: prompt + '\n\n' + mergePrompt + notes.join('\n\n'), selected, mode: 'batches' }
 }
 
 export async function loadModelList({ headers, signal }) {

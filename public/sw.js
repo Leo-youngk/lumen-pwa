@@ -16,12 +16,13 @@
 // Vite replaces this with a hash of the built HTML and its asset references.
 const VERSION = 'lumen-shell-development'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg']
+const IMPORT_ASSETS = []
 
 self.addEventListener('install', event => {
   event.waitUntil(
     caches
       .open(VERSION)
-      .then(cache => cache.addAll(SHELL))
+      .then(cache => cache.addAll([...SHELL, ...IMPORT_ASSETS]))
       .then(() => self.skipWaiting())
       .catch(() => self.skipWaiting()),
   )

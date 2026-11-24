@@ -4,6 +4,8 @@ import { build } from 'esbuild'
 import { readFile } from 'node:fs/promises'
 import worker from '../worker/index.mjs'
 import { providerReasoningParams } from '../worker/provider.mjs'
+import { continuationWriter } from '../src/lib/continuation.ts'
+import { retryModel } from '../client/retry-model.js'
 
 const compiled = await build({
   entryPoints: ['src/lib/api.ts'],
@@ -153,9 +155,10 @@ test('Worker propagates cancellation before upstream response headers arrive', a
   const abort = new AbortController()
   const pending = send(headers, question, abort.signal)
   await connected.promise
+  const body = assert.rejects((await pending).text(), { name: 'AbortError' })
   abort.abort()
   assert.equal(upstreamSignal.aborted, true)
-  assert.equal((await pending).status, 499)
+  await body
 })
 
 test('Worker connection timeout covers a provider that never sends headers', async t => {
@@ -166,10 +169,89 @@ test('Worker connection timeout covers a provider that never sends headers', asy
     connected.resolve()
   }))
   t.mock.timers.enable({ apis: ['setTimeout'] })
-  const pending = send(headers, question)
+  const body = (await send(headers, question)).text()
   await connected.promise
   t.mock.timers.tick(150_000)
-  assert.equal((await pending).status, 504)
+  assert.match(await body, /"code":"upstream_timeout","status":504/)
+})
+
+test('Worker sends keepalives before model headers and allows a long gap between chunks', async t => {
+  const headers = await loginHeaders()
+  const pending = Promise.withResolvers()
+  let source
+  t.mock.method(globalThis, 'fetch', () => pending.promise)
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() })
+  const response = await send(headers, { ...question, system: 'This request includes a book.' })
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  const next = async () => decoder.decode((await reader.read()).value)
+  assert.match(await next(), /^: connected/)
+  async function wait() {
+    for (let index = 0; index < 6; index++) {
+      const ping = next()
+      await settle()
+      t.mock.timers.tick(12_000)
+      assert.match(await ping, /^: keepalive/)
+    }
+  }
+  await wait()
+  const encoder = new TextEncoder()
+  pending.resolve(new Response(new ReadableStream({
+    start(controller) {
+      source = controller
+      controller.enqueue(encoder.encode(frame({ choices: [{ delta: { content: 'First part' } }] })))
+    },
+  })))
+  assert.match(await next(), /First part/)
+  await wait()
+  source.enqueue(encoder.encode(frame({ choices: [{ delta: { content: 'End' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n'))
+  source.close()
+  assert.match(await next(), /"text":"End"/)
+  assert.match(await next(), /"type":"done"/)
+})
+
+test('rate limits retain the upstream retry delay', async t => {
+  const headers = await loginHeaders()
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ error: 'too many requests' }, {
+    status: 429, headers: { 'Retry-After': '30' },
+  }))
+  const response = await send(headers, question)
+  const body = await response.text()
+  assert.match(body, /"code":"rate_limit","status":429,"retryAfterMs":30000/)
+  t.mock.method(globalThis, 'fetch', async () => new Response(body))
+  await assert.rejects(new LumenClient().chat(question, () => {}), { status: 429, code: 'rate_limit', retryAfterMs: 30_000 })
+})
+
+test('a continuation appends new text and removes a repeated tail across deltas', () => {
+  const end = '这一段已经完整生成。'
+  let answer = '章节一。' + end
+  const append = continuationWriter(answer, text => { answer += text })
+  append.push('这一段已经')
+  append.push('完整生成。')
+  append.push('\n\n## 第二章')
+  append.finish()
+  assert.equal(answer, '章节一。' + end + '\n\n## 第二章')
+})
+
+test('transient failures retry once and a stopped request never restarts', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let calls = 0
+  const controller = new AbortController()
+  const task = async () => {
+    if (++calls === 1) throw Object.assign(new Error('temporary'), { code: 'upstream_interrupted' })
+    return 'finished'
+  }
+  const pending = retryModel(task, controller.signal)
+  await settle()
+  t.mock.timers.tick(650)
+  assert.equal(await pending, 'finished')
+  calls = 0
+  const aborted = assert.rejects(retryModel(task, controller.signal), { name: 'AbortError' })
+  await settle()
+  controller.abort()
+  await aborted
+  t.mock.timers.tick(650)
+  assert.equal(calls, 1)
 })
 
 test('canceling a downstream reader aborts a quiet upstream stream', async t => {
@@ -188,6 +270,7 @@ test('canceling a downstream reader aborts a quiet upstream stream', async t => 
   t.after(() => { try { source.error(new Error('test cleanup')) } catch {} })
   const reader = (await send(headers, question)).body.getReader()
   await reader.read()
+  await reader.read()
   await reader.cancel()
   await settle()
   assert.equal(upstreamSignal.aborted, true)
@@ -205,11 +288,11 @@ test('heartbeat comments do not extend the content idle timeout forever', async 
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() })
   const body = (await send(headers, question)).text()
   await settle()
-  t.mock.timers.tick(30_000)
+  t.mock.timers.tick(90_000)
   source.enqueue(new TextEncoder().encode(': ping\n\n'))
   await settle()
   t.mock.timers.tick(31_000)
-  assert.match(await body, /"type":"error"/)
+  assert.match(await body, /"code":"upstream_timeout"/)
 })
 
 test('deployment enables real incoming Request.signal cancellation', async () => {

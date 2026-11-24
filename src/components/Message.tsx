@@ -40,6 +40,7 @@ export const AssistantBubble = memo(function AssistantBubble({
   fontSize,
   lineHeight,
   onRetry,
+  onContinue,
 }: {
   message: Message
   streaming: boolean
@@ -47,6 +48,7 @@ export const AssistantBubble = memo(function AssistantBubble({
   fontSize: number
   lineHeight: number
   onRetry?: () => void
+  onContinue?: () => void
 }) {
   const [showReasoning, setShowReasoning] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'done' | 'error'>('idle')
@@ -139,6 +141,11 @@ export const AssistantBubble = memo(function AssistantBubble({
             onClick={() => void copyAnswer()}
           />
           {onRetry ? <MessageAction icon="refresh" label="重新生成" onClick={onRetry} /> : null}
+          {onContinue ? (
+            <button type="button" onClick={onContinue} className="min-h-9 rounded-full px-2 text-[13px] text-brand-ink active:opacity-60">
+              继续生成
+            </button>
+          ) : null}
           <MessageAction
             icon={speaking ? 'stop' : 'speaker'}
             label={speaking ? '停止朗读' : '朗读回答'}

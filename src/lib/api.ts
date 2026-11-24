@@ -1,4 +1,3 @@
-import type { Chapter } from './store'
 import { createParser } from 'eventsource-parser'
 
 /** Shape returned by `/api/models`. */
@@ -54,13 +53,14 @@ export type ChatEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'usage'; input?: number; output?: number; total?: number }
   | { type: 'done' }
-  | { type: 'error'; error: string; code?: string }
+  | { type: 'error'; error: string; code?: string; status?: number; retryAfterMs?: number }
 
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly retryAfterMs?: number,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -106,16 +106,6 @@ function reasoningOptions(model: RawModel, protocol?: ModelProtocol): ReasoningO
   }
   if (reasoning.toggle && options.size === 1 && protocol !== 'responses') options.add('on')
   return [...options]
-}
-
-export interface EpubResult {
-  title: string
-  author: string
-  chapterCount: number
-  charCount: number
-  unreadable: number
-  missingSections?: string[]
-  chapters: Chapter[]
 }
 
 export interface ClientOptions {
@@ -223,65 +213,91 @@ export class LumenClient {
     onEvent: (event: ChatEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    const response = await this.request('/api/chat', {
-      method: 'POST',
-      body: JSON.stringify(body),
-      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
-      signal,
-    })
-
-    if (!response.ok || !response.body) {
-      const detail = await response.text().catch(() => '')
-      let message = '服务没有响应。'
-      try {
-        const parsed = JSON.parse(detail) as { error?: string }
-        if (parsed.error) message = parsed.error
-      } catch {
-        if (detail.trim()) message = detail.slice(0, 200)
-      }
-      throw new ApiError(message, response.status)
+    const connection = new AbortController()
+    const connectedSignal = signal ? AbortSignal.any([signal, connection.signal]) : connection.signal
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const watchConnection = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => connection.abort(), 55_000)
     }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let completed = false
-    let failure: ApiError | null = null
-    const parser = createParser({
-      maxBufferSize: 8 * 1024 * 1024,
-      onError(error) {
-        if (error.type === 'max-buffer-size-exceeded') throw new ApiError('单条回复数据过大，连接已中止。', 200)
-      },
-      onEvent({ data }) {
-        if (completed) return
-        let event: ChatEvent
-        try {
-          event = JSON.parse(data) as ChatEvent
-        } catch {
-          throw new ApiError('回复数据格式异常，回答未完整接收。请重试。', 200)
-        }
-        if (!event || typeof event !== 'object' || Array.isArray(event)) throw new ApiError('回复数据格式异常。', 200)
-        if ((event.type === 'text' || event.type === 'reasoning') && typeof event.text !== 'string') {
-          throw new ApiError('回复数据格式异常。', 200)
-        }
-        if (event.type === 'done') completed = true
-        if (event.type === 'error') failure = new ApiError(event.error || '模型服务返回了错误。', 200, event.code)
-        onEvent(event)
-      },
-    })
-
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let failure: ApiError | undefined
     try {
-      while (!completed) {
+      watchConnection()
+      const response = await this.request('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+        signal: connectedSignal,
+      })
+      watchConnection()
+
+      if (!response.ok || !response.body) {
+        const detail = await response.json().catch(() => null)
+        const message = typeof detail?.error === 'string' ? detail.error
+          : 'Lumen 服务暂时无法响应（HTTP ' + response.status + '）。'
+        const code = typeof detail?.code === 'string' ? detail.code
+          : response.status === 429 ? 'rate_limit'
+            : response.status >= 500 ? 'upstream_unavailable' : undefined
+        throw new ApiError(message, response.status, code)
+      }
+      if (/^(text\/html|application\/json)\b/i.test(response.headers.get('Content-Type') ?? '')) {
+        throw new ApiError('Lumen 没有收到流式回复，请重新连接。', response.status, 'transport_interrupted')
+      }
+
+      reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let completed = false
+      let eof = false
+      const parser = createParser({
+        maxBufferSize: 8 * 1024 * 1024,
+        onError(error) {
+          if (error.type === 'max-buffer-size-exceeded') throw new ApiError('单条回复数据过大，连接已中止。', 200)
+        },
+        onEvent({ data }) {
+          if (completed || !data) return
+          let event: ChatEvent
+          try {
+            event = JSON.parse(data) as ChatEvent
+          } catch {
+            throw eof
+              ? new ApiError('回复连接中断，回答未完整返回。', 0, 'transport_interrupted')
+              : new ApiError('回复数据格式异常，回答未完整接收。请重试。', 200)
+          }
+          if (!event || typeof event !== 'object' || Array.isArray(event)) throw new ApiError('回复数据格式异常。', 200)
+          if ((event.type === 'text' || event.type === 'reasoning') && typeof event.text !== 'string') {
+            throw new ApiError('回复数据格式异常。', 200)
+          }
+          if (event.type === 'done') completed = true
+          if (event.type === 'error') {
+            failure = new ApiError(event.error || '模型服务返回了错误。', event.status ?? 200, event.code, event.retryAfterMs)
+          }
+          onEvent(event)
+        },
+      })
+
+      while (!completed && !failure) {
         const { done, value } = await reader.read()
+        eof = done
+        watchConnection()
         parser.feed(done ? decoder.decode() + '\n\n' : decoder.decode(value, { stream: true }))
         if (done) break
       }
+      if (failure) throw failure
+      if (!completed) throw new ApiError('回复连接中断，回答未完整返回。', 0, 'transport_interrupted')
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (failure) throw failure
+      if (error instanceof ApiError) throw error
+      if (connection.signal.aborted || error instanceof TypeError) {
+        throw new ApiError('设备与 Lumen 的连接中断，请检查网络。', 0, 'transport_interrupted')
+      }
+      throw error
     } finally {
-      void reader.cancel().catch(() => {})
-      reader.releaseLock()
+      clearTimeout(timer)
+      void reader?.cancel().catch(() => {})
+      reader?.releaseLock()
     }
-
-    if (failure) throw failure
-    if (!completed) throw new ApiError('连接中断，回答未完整返回。请重试。', 200)
   }
 
   async conversations<T>(signal?: AbortSignal): Promise<T> {
@@ -299,25 +315,4 @@ export class LumenClient {
     if (!response.ok) throw new ApiError('云端同步失败。', response.status)
   }
 
-  async uploadEpub(
-    file: File,
-    signal?: AbortSignal,
-  ): Promise<EpubResult> {
-    if (file.size > 16 * 1024 * 1024) throw new Error('EPUB 最大支持 16 MB。')
-    const response = await this.request('/api/epub', {
-      method: 'POST',
-      body: file,
-      headers: { 'Content-Type': 'application/epub+zip' },
-      signal: signal ?? AbortSignal.timeout?.(115_000),
-    })
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as { error?: string }
-      throw new ApiError(data.error ?? 'EPUB 解析失败。', response.status)
-    }
-    const book = (await response.json()) as EpubResult
-    if (!Array.isArray(book.chapters) || !book.chapters.length) {
-      throw new Error('EPUB 转换后没有可读章节。')
-    }
-    return book
-  }
 }

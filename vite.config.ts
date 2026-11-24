@@ -1,7 +1,7 @@
 import { fileURLToPath, URL } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -25,10 +25,12 @@ export default defineConfig({
         const revision = createHash('sha256').update(html).digest('hex').slice(0, 12)
         const workerPath = join(directory, 'sw.js')
         const source = await readFile(workerPath, 'utf8')
-        await writeFile(workerPath, source.replace(
-          /const VERSION = '[^']+'/,
-          `const VERSION = 'lumen-shell-${revision}'`,
-        ))
+        const importFiles = (await readdir(join(directory, 'assets')))
+          .filter(name => name.startsWith('epub.worker-') && name.endsWith('.js'))
+          .map(name => '/assets/' + name)
+        await writeFile(workerPath, source
+          .replace(/const VERSION = '[^']+'/, "const VERSION = 'lumen-shell-" + revision + "'")
+          .replace('const IMPORT_ASSETS = []', 'const IMPORT_ASSETS = ' + JSON.stringify(importFiles)))
       },
     },
   ],
