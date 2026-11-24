@@ -18,8 +18,8 @@ src/
   lib/            API 客户端、本地存储、视口与主题
   styles/         Tailwind 主题与设计令牌
 worker/           Cloudflare Worker：API、EPUB 解析、模型供应商适配
-  index.mjs       入口（由 tools/patch-worker.py 从 base/worker.mjs 生成）
-base/             从原生产版本恢复的 Worker 与资源，patch 脚本的输入
+  index.mjs       当前维护的 API 入口
+base/             原生产版本的恢复快照，仅供历史参考
 mock/             本地 mock API，供前端独立开发
 tools/build.mjs   产出 built/（Worker bundle + 静态资源）
 public/           PWA 图标、manifest、service worker
@@ -39,6 +39,7 @@ npm run dev              # http://localhost:4173
 
 ```bash
 npm run typecheck        # tsc --noEmit
+npm test                 # 对话流、供应商协议、EPUB 与存储恢复回归
 npm run build            # 前端 → dist/
 node tools/build.mjs     # 完整产物 → built/worker.mjs + built/public/
 ```
@@ -46,13 +47,16 @@ node tools/build.mjs     # 完整产物 → built/worker.mjs + built/public/
 ## 部署到 Cloudflare
 
 ```bash
-python3 tools/patch-worker.py   # 生成 worker/index.mjs（如未提交）
 node tools/build.mjs
 cp wrangler.example.jsonc wrangler.jsonc   # 填入 Worker 名称与 KV namespace ID
 npx wrangler secret put APP_ACCESS_TOKEN
 npx wrangler secret put OPENCODE_GO_API_KEY
 npx wrangler deploy
 ```
+
+`worker/index.mjs` 已纳入版本管理，直接构建即可。`tools/patch-worker.py` 是历史恢复工具，重新运行会覆盖当前 API 修复，不用于日常部署。
+
+示例配置启用了 `enable_request_signal`，使停止生成与客户端断开能够取消上游请求；部署时请保留该兼容标志。
 
 ## 设计约定
 

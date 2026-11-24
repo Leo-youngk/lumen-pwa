@@ -129,7 +129,7 @@ export const AssistantBubble = memo(function AssistantBubble({
           ) : null}
         </div>
       )}
-      {message.incomplete ? <p className="mt-1 text-[12px] text-quiet">回答未完成</p> : null}
+      {message.incomplete && !streaming ? <p className="mt-1 text-[12px] text-quiet">回答未完成</p> : null}
 
       {!empty && !streaming ? (
         <div className="mt-1 flex items-center gap-0.5">

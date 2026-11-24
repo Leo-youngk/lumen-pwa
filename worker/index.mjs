@@ -1,4 +1,5 @@
 import { handleEpub } from './epub.mjs';
+import { createParser } from 'eventsource-parser';
 import { goBaseUrl, isOpenCodeGo, providerRoute, providerReasoningParams, providerChatUrl, providerModelsUrl, providerSessionHeaders, parseProviderUsage, usageEvent } from './provider.mjs';
 
 var __defProp = Object.defineProperty;
@@ -99,6 +100,7 @@ async function handleAuth(request, env) {
   } catch {
     return json({ error: "\u8BF7\u6C42\u4F53\u4E0D\u662F\u6709\u6548 JSON\u3002" }, 400);
   }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({ error: "请求体必须是 JSON 对象。" }, 400);
   if (typeof payload.token !== "string" || !constantTimeEqual(payload.token, env.APP_ACCESS_TOKEN)) return json({ error: "\u8BBF\u95EE\u4EE4\u724C\u4E0D\u6B63\u786E\u3002" }, 401);
   const session = await createSession(env.APP_ACCESS_TOKEN);
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
@@ -154,18 +156,22 @@ function deltaReasoning(event) {
 }
 __name(deltaReasoning, "deltaReasoning");
 function upstreamErrorMessage(event) {
+  if (event.type === "error" && typeof event.message === "string") return event.message;
   if (!event.error) return "";
   return typeof event.error === "string" ? event.error : event.error.message || "OpenCode Go \u8FD4\u56DE\u9519\u8BEF\u3002";
 }
 __name(upstreamErrorMessage, "upstreamErrorMessage");
 function withDeadline(work, ms, onTimeout) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(() => resolve(onTimeout), ms);
     const settle = /* @__PURE__ */ __name((value) => {
       clearTimeout(timer);
       resolve(value);
     }, "settle");
-    work.then(settle, () => settle(onTimeout));
+    work.then(settle, error => {
+      clearTimeout(timer);
+      reject(error);
+    });
   });
 }
 __name(withDeadline, "withDeadline");
@@ -230,6 +236,7 @@ async function handleChat(request, env) {
   } catch {
     return json({ error: "\u8BF7\u6C42\u4F53\u4E0D\u662F\u6709\u6548 JSON\u3002" }, 400);
   }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({ error: "请求体必须是 JSON 对象。" }, 400);
   const latestUser = Array.isArray(payload.messages) && payload.messages.findLast(message =>
     message?.role === "user" && typeof message.content === "string"
   );
@@ -316,6 +323,14 @@ async function handleChat(request, env) {
     reasoning: payload.reasoning_effort ?? payload.reasoning
   });
   const upstreamController = new AbortController();
+  const abortUpstream = () => upstreamController.abort(request.signal.reason);
+  request.signal.addEventListener("abort", abortUpstream, { once: true });
+  if (request.signal.aborted) abortUpstream();
+  const connectionTimer = setTimeout(() => upstreamController.abort(new DOMException("模型服务连接超时。", "TimeoutError")), FIRST_BYTE_TIMEOUT_MS);
+  const cleanup = () => {
+    clearTimeout(connectionTimer);
+    request.signal.removeEventListener("abort", abortUpstream);
+  };
   let upstream;
   try {
     const sessionHeaders = providerSessionHeaders(baseUrl, payload.session_id);
@@ -342,14 +357,20 @@ async function handleChat(request, env) {
       }
     }
   } catch (error) {
+    cleanup();
     diag("chat.connect-failed", { model, keySource, keyId, error: error instanceof Error ? error.message : String(error), ms: Date.now() - startedAt });
+    if (request.signal.aborted) return json({ error: "请求已取消。" }, 499);
+    if (upstreamController.signal.reason?.name === "TimeoutError") return json({ error: "模型服务连接超时，请稍后重试。" }, 504);
     return json({ error: "\u65E0\u6CD5\u8FDE\u63A5 OpenCode Go\u3002" }, 502);
   }
   if (providerRedirect(upstream)) {
+    cleanup();
+    void upstream.body?.cancel().catch(() => {});
     return json({ error: "模型服务要求跳转，请在设置中填写模型 API 的实际地址。" }, 502);
   }
   if (!upstream.ok || !upstream.body) {
     const body = await upstream.text().catch(() => "");
+    cleanup();
     let message = "";
     try {
       const parsed = JSON.parse(body);
@@ -369,6 +390,7 @@ async function handleChat(request, env) {
     });
     return json({ error: message.slice(0, 500) || `模型服务返回 HTTP ${upstream.status}。` }, 502);
   }
+  clearTimeout(connectionTimer);
   const encoder = new TextEncoder();
   const sse = /* @__PURE__ */ __name((data) => encoder.encode(`data: ${JSON.stringify(data)}
 
@@ -376,22 +398,32 @@ async function handleChat(request, env) {
   const { readable, writable } = new TransformStream();
   void (async () => {
     const writer = writable.getWriter();
+    void writer.closed.catch(() => upstreamController.abort());
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let received = 0;
     let receivedText = 0;
-    let buffer = "";
+    const frames = [];
+    const parser = createParser({
+      maxBufferSize: 8 * 1024 * 1024,
+      onEvent: ({ data }) => frames.push(data),
+      onError(error) {
+        if (error.type === "max-buffer-size-exceeded") throw new Error("模型返回的单条数据过大。");
+      }
+    });
     let failure = "";
     let completed = false;
     let truncated = false;
     let eventCount = 0;
     let usage = null;
+    let ended = false;
+    let lastContentAt = Date.now();
 
     try {
       while (true) {
         const chunk = await withDeadline(
           reader.read(),
-          received ? IDLE_TIMEOUT_MS : FIRST_BYTE_TIMEOUT_MS,
+          Math.max(0, (received ? IDLE_TIMEOUT_MS : FIRST_BYTE_TIMEOUT_MS) - (Date.now() - lastContentAt)),
           "timeout"
         );
         if (chunk === "timeout") {
@@ -399,65 +431,73 @@ async function handleChat(request, env) {
           console.error("[chat] timeout", { model, endpoint: endpointPath, received, eventCount });
           break;
         }
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const data = trimmed.slice(5).trim();
+        parser.feed(chunk.done ? decoder.decode() + "\n\n" : decoder.decode(chunk.value, { stream: true }));
+        for (const data of frames.splice(0)) {
           if (!data) continue;
           if (data === "[DONE]") {
             if (!usesAnthropicEndpoint && !usesResponses) completed = true;
-            continue;
+            ended = true;
+            break;
           }
           let parsed;
           try {
             parsed = JSON.parse(data);
           } catch (parseError) {
             console.error("[chat] SSE JSON.parse failed", { model, endpoint: endpointPath, error: parseError instanceof Error ? parseError.message : String(parseError) });
-            continue;
+            throw new Error("模型返回的数据格式异常，回答未完整接收。");
           }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("模型返回的数据格式异常。");
           eventCount += 1;
+          usage = parseProviderUsage(parsed, usage);
 
           const errorMessage = upstreamErrorMessage(parsed);
           if (errorMessage) throw new Error(errorMessage);
           if (usesResponses) {
             completed ||= parsed.type === "response.completed";
+            ended ||= parsed.type === "response.completed";
           } else if (usesAnthropicEndpoint) {
             completed ||= parsed.type === "message_stop";
-            truncated ||= parsed.type === "message_delta" && parsed.delta?.stop_reason === "max_tokens";
+            ended ||= parsed.type === "message_stop";
+            const reason = parsed.type === "message_delta" ? parsed.delta?.stop_reason : void 0;
+            truncated ||= reason === "max_tokens" || reason === "model_context_window_exceeded";
+            if (reason === "tool_use") throw new Error("模型返回了工具调用，当前对话无法完成这条回答。");
+            if (reason === "pause_turn") throw new Error("模型暂停了回答，当前内容尚未完成。请重试。");
           } else {
             const reason = parsed.choices?.[0]?.finish_reason;
             completed ||= typeof reason === "string" && reason.length > 0;
             truncated ||= reason === "length";
+            if (reason === "content_filter") throw new Error("模型服务因内容限制中止了回答。");
+            if (reason === "tool_calls" || reason === "function_call") throw new Error("模型返回了工具调用，当前对话无法完成这条回答。");
           }
-          usage = parseProviderUsage(parsed, usage);
           if (parsed.type === "response.incomplete" && parsed.response?.incomplete_details?.reason === "max_output_tokens") {
             truncated = true;
             completed = true;
+            ended = true;
           } else if (parsed.type === "response.failed" || parsed.type === "response.incomplete") {
             throw new Error(parsed.response?.error?.message || "模型没有完成整条回答。");
           }
-          const text = parsed.type === "response.output_text.delta" ? parsed.delta : deltaText(parsed);
+          const text = parsed.type === "response.output_text.delta" || parsed.type === "response.refusal.delta" ? parsed.delta : deltaText(parsed);
           if (text) {
+            lastContentAt = Date.now();
             received += text.length;
             receivedText += text.length;
             await writer.write(sse({ type: "text", text }));
           }
           const reasoning = parsed.type === "response.reasoning_summary_text.delta" ? parsed.delta : deltaReasoning(parsed);
           if (reasoning) {
+            lastContentAt = Date.now();
             received += reasoning.length;
             await writer.write(sse({ type: "reasoning", text: reasoning }));
           }
         }
+        if (chunk.done || ended) break;
       }
     } catch (error) {
       failure = error instanceof Error ? error.message : "\u6D41\u5F0F\u8FDE\u63A5\u4E2D\u65AD";
     } finally {
       void reader.cancel().catch(() => void 0);
       upstreamController.abort();
+      cleanup();
     }
     if (!failure && truncated) failure = "回答达到模型输出上限，当前内容未完整生成。";
     if (!failure && receivedText && !completed) failure = "上游连接中断，回答未完整返回。请重试。";

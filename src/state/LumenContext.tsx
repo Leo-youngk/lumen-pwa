@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { LumenClient, type ModelOption } from '@/lib/api'
+import { ApiError, LumenClient, type ModelOption } from '@/lib/api'
+import { clearChatDraft } from '@/hooks/useChatDraft'
 import { resolveOutputLimit } from '@/lib/modelLimits'
 import { bookContext, type ReadingProgress } from '../../client/features.js'
 import {
@@ -65,6 +66,7 @@ interface LumenContextValue {
   deleteConversation: (id: string) => void
   togglePin: (id: string) => void
   clearAll: () => void
+  storageError: string | null
 
   streaming: boolean
   streamingId: string | null
@@ -144,6 +146,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<{ id: string; message: string } | null>(null)
   const [usage, setUsage] = useState<UsageState>(loadUsage)
   const [syncCode, setSyncCodeState] = useState<string>(loadSyncCode)
+  const [storageError, setStorageError] = useState<string | null>(null)
 
   // Refs mirror state so the streaming callbacks and the client header hook
   // read the newest values without being re-created (which would restart the
@@ -196,9 +199,10 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status !== 'authenticated') return
     const controller = new AbortController()
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
     setModelStatus({ state: 'loading' })
     client
-      .models(controller.signal)
+      .models(signal)
       .then(list => {
         if (controller.signal.aborted) return
         setModels(list)
@@ -213,9 +217,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       })
       .catch((failure: unknown) => {
         if (controller.signal.aborted) return
+        if (failure instanceof ApiError && failure.status === 401) setStatus('unauthenticated')
         setModelStatus({
           state: 'error',
-          message: failure instanceof Error ? failure.message : '模型列表获取失败。',
+          message: signal.aborted ? '连接模型列表超时，请稍后重试。'
+            : failure instanceof Error ? failure.message : '模型列表获取失败。',
         })
       })
     return () => controller.abort()
@@ -223,19 +229,26 @@ export function LumenProvider({ children }: { children: ReactNode }) {
 
   /* -------------------------------------------------------------- persist */
 
+  const persistHistory = useCallback((history: Conversation[]) => {
+    void saveConversations(history).then(
+      () => setStorageError(null),
+      (failure: unknown) => setStorageError(failure instanceof Error ? failure.message : '对话尚未保存，请保持页面打开。'),
+    )
+  }, [])
+
   useEffect(() => {
     saveSettings(settings)
   }, [settings])
 
   useEffect(() => {
     if (!historyReady || !streaming) return
-    const timer = window.setInterval(() => { void saveConversations(conversationsRef.current) }, 1_000)
+    const timer = window.setInterval(() => persistHistory(conversationsRef.current), 1_000)
     return () => window.clearInterval(timer)
-  }, [historyReady, streaming])
+  }, [historyReady, streaming, persistHistory])
 
   useEffect(() => {
-    if (historyReady && !streaming) void saveConversations(conversations)
-  }, [conversations, historyReady, streaming])
+    if (historyReady && !streaming) persistHistory(conversations)
+  }, [conversations, historyReady, streaming, persistHistory])
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings(current => ({ ...current, ...patch }))
@@ -290,7 +303,6 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const openConversation = useCallback((id: string | null) => {
     activeIdRef.current = id
     setActiveId(id)
-    setError(null)
   }, [])
 
   const startConversation = useCallback((seed: Partial<Conversation>, open: boolean) => {
@@ -308,6 +320,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const deleteConversation = useCallback((id: string) => {
     if (streamingId === id) abortRef.current?.abort()
     setConversations(current => current.filter(item => item.id !== id))
+    clearChatDraft(id)
     if (activeIdRef.current === id) openConversation(null)
   }, [openConversation, streamingId])
 
@@ -320,6 +333,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const clearAll = useCallback(() => {
     abortRef.current?.abort()
     setConversations([])
+    clearChatDraft()
     openConversation(null)
   }, [openConversation])
 
@@ -367,10 +381,12 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       setError(null)
 
       const answerId = newId()
+      const previousAnswer = conversation.messages.find(message => message.id === replaceId)
       const answer: Message = {
         id: answerId,
         role: 'assistant',
         content: '',
+        incomplete: true,
         createdAt: Date.now(),
       }
       setConversations(current =>
@@ -391,13 +407,20 @@ export function LumenProvider({ children }: { children: ReactNode }) {
         let output = ''
         let reasoning = ''
         let frame: number | undefined
+        let flushTimer: number | undefined
         function flush() {
           if (frame !== undefined) cancelAnimationFrame(frame)
+          window.clearTimeout(flushTimer)
           frame = undefined
+          flushTimer = undefined
           if (output) appendToAnswer(conversationId, answerId, 'content', output)
           if (reasoning) appendToAnswer(conversationId, answerId, 'reasoning', reasoning)
           output = ''
           reasoning = ''
+        }
+        function scheduleFlush() {
+          frame ??= requestAnimationFrame(flush)
+          flushTimer ??= window.setTimeout(flush, 200)
         }
 
         try {
@@ -414,11 +437,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
               output += event.text
               if (streamAnswer) {
                 setReadingProgress(null)
-                frame ??= requestAnimationFrame(flush)
+                scheduleFlush()
               }
             } else if (streamAnswer && event.type === 'reasoning') {
               reasoning += event.text
-              frame ??= requestAnimationFrame(flush)
+              scheduleFlush()
             }
           }, signal)
           return output
@@ -471,19 +494,24 @@ export function LumenProvider({ children }: { children: ReactNode }) {
           if (maxOutput < 16) throw new Error('对话历史占用了模型的上下文，请新建对话后重试。')
         }
         await chat({ messages, system, max_tokens: maxOutput }, controller.signal, true)
+        setConversations(current => current.map(item => item.id !== conversationId ? item : {
+          ...item,
+          messages: item.messages.map(message => message.id === answerId ? { ...message, incomplete: false } : message),
+        }))
       } catch (failure) {
+        if (failure instanceof ApiError && failure.status === 401) setStatus('unauthenticated')
         if (!controller.signal.aborted) {
           setError({ id: conversationId, message:
-            failure instanceof Error
+            (failure instanceof Error
               ? failure.message
-              : '请求失败。',
+              : '请求失败。') + (previousAnswer && !previousAnswer.incomplete ? ' 已保留上一次的完整回答。' : ''),
           })
         }
         setConversations(current => current.map(item => item.id !== conversationId ? item : {
           ...item,
-          messages: item.messages
-            .filter(message => message.id !== answerId || message.content.trim())
-            .map(message => message.id === answerId ? { ...message, incomplete: true } : message),
+          messages: previousAnswer && !previousAnswer.incomplete
+            ? item.messages.map(message => message.id === answerId ? previousAnswer : message)
+            : item.messages.filter(message => message.id !== answerId || message.content.trim()),
         }))
       } finally {
         abortRef.current = null
@@ -549,7 +577,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     const lastUser = [...conversation.messages].reverse().find(item => item.role === 'user')
     if (!lastUser) return
     const last = conversation.messages.at(-1)
-    await run(conversation, modelContent(lastUser), last?.incomplete ? last.id : undefined)
+    await run(conversation, modelContent(lastUser), last?.role === 'assistant' ? last.id : undefined)
   }, [run])
 
   /* ----------------------------------------------------------------- auth */
@@ -598,6 +626,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     deleteConversation,
     togglePin,
     clearAll,
+    storageError,
     streaming,
     streamingId,
     readingProgress,

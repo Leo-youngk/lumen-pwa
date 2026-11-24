@@ -124,6 +124,7 @@ async function mapLimited(batches, task, signal, progress) {
         combined.throwIfAborted()
         const current = index++
         results[current] = await task(batches[current], current, combined)
+        combined.throwIfAborted()
         progress?.(++finished, batches.length)
       }
     }))

@@ -6,6 +6,7 @@ import { NavIconButton, NavigationBar } from '@/components/NavigationBar'
 import { useLumen } from '@/state/LumenContext'
 import { cn } from '@/lib/cn'
 import { useIsTouch } from '@/lib/viewport'
+import { useChatDraft } from '@/hooks/useChatDraft'
 
 function answerContainer(node: Node | null) {
   const element = node instanceof Element ? node : node?.parentElement
@@ -13,7 +14,6 @@ function answerContainer(node: Node | null) {
 }
 
 export interface ChatScreenProps {
-  homeKey: number
   onOpenDrawer: () => void
   onOpenOptions: () => void
   onOpenModels: () => void
@@ -25,7 +25,6 @@ export interface ChatScreenProps {
 }
 
 export function ChatScreen({
-  homeKey,
   onOpenDrawer,
   onOpenOptions,
   onOpenModels,
@@ -49,16 +48,14 @@ export function ChatScreen({
     model,
     modelLabel,
     models,
+    modelStatus,
   } = useLumen()
 
   const touch = useIsTouch()
-  const conversationKey = active?.id ?? homeKey
+  const conversationKey = active?.id ?? 'home'
+  const { text: draft, quote, setText: setDraft, setQuote, clear: clearDraft } = useChatDraft(conversationKey)
   const [draftScope, setDraftScope] = useState(conversationKey)
-  const [homeDraft, setHomeDraft] = useState('')
-  const [homeDraftKey, setHomeDraftKey] = useState(homeKey)
-  const [draft, setDraft] = useState('')
   const [selection, setSelection] = useState('')
-  const [quote, setQuote] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
   const feed = useRef<HTMLDivElement>(null)
   const transcript = useRef<HTMLDivElement>(null)
@@ -69,16 +66,10 @@ export function ChatScreen({
   const generating = streamingId === active?.id
   if (draftScope !== conversationKey) {
     setDraftScope(conversationKey)
-    setDraft('')
     setSelection('')
-    setQuote('')
     setBelowFold(false)
   }
-  if (homeDraftKey !== homeKey) {
-    setHomeDraftKey(homeKey)
-    setHomeDraft('')
-  }
-  const progressLabel = readingProgress?.stage === 'direct'
+  const progressLabel = !generating ? '' : readingProgress?.stage === 'direct'
     ? '正在发送所选范围内的全部正文…'
     : readingProgress?.stage === 'read'
       ? `已读原文 ${readingProgress.done}/${readingProgress.total} 批`
@@ -189,16 +180,26 @@ export function ChatScreen({
                 <AssistantBubble
                   key={message.id}
                   message={message}
-                  streaming={generating && !readingProgress && index === messages.length - 1}
+                  streaming={generating && index === messages.length - 1}
                   compact={settings.compactMode}
                   fontSize={settings.fontSize}
                   lineHeight={settings.lineHeight}
-                  onRetry={index === messages.length - 1 && !streaming ? retry : undefined}
+                  onRetry={index === messages.length - 1 && !streaming && modelStatus.state === 'ready' ? retry : undefined}
                 />
               ),
             )}
             {generating && progressLabel ? (
               <p role="status" className="px-4 py-2 text-[13px] text-quiet">{progressLabel}</p>
+            ) : null}
+            {!streaming && !error && messages.at(-1)?.role === 'user' ? (
+              <button
+                type="button"
+                onClick={() => void retry()}
+                disabled={modelStatus.state !== 'ready'}
+                className="mx-4 my-2 min-h-10 rounded-full bg-field px-4 text-[14px] text-secondary disabled:opacity-40"
+              >
+                重新发送
+              </button>
             ) : null}
 
             {error ? (
@@ -207,11 +208,12 @@ export function ChatScreen({
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
+                    disabled={streaming || modelStatus.state !== 'ready'}
                     onClick={() => {
                       clearError()
                       void retry()
                     }}
-                    className="rounded-full bg-white/55 px-3 py-1 text-[13px] font-medium active:opacity-60"
+                    className="rounded-full bg-white/55 px-3 py-1 text-[13px] font-medium active:opacity-60 disabled:opacity-40"
                   >
                     重试
                   </button>
@@ -251,12 +253,10 @@ export function ChatScreen({
 
       <Composer
         inputRef={input}
-        value={active ? draft : homeDraft}
-        onChange={active ? setDraft : setHomeDraft}
+        value={draft}
+        onChange={setDraft}
         onSubmit={text => {
-          if (active) setDraft('')
-          else setHomeDraft('')
-          setQuote('')
+          clearDraft()
           stick.current = true
           setBelowFold(false)
           void send(text, quote || undefined)
@@ -264,7 +264,7 @@ export function ChatScreen({
         }}
         onStop={stop}
         streaming={generating}
-        disabled={uploading || (streaming && !generating)}
+        disabled={uploading || (streaming && !generating) || modelStatus.state !== 'ready' || !models.length}
         leading={selection ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-start px-4 pb-2">
             <button
@@ -283,8 +283,13 @@ export function ChatScreen({
             </button>
           </div>
         ) : undefined}
-        context={active?.book || quote || uploading ? (
+        context={active?.book || quote || uploading || modelStatus.state !== 'ready' || !models.length ? (
           <div className="min-w-0 space-y-1 pb-0.5">
+            {modelStatus.state !== 'ready' || !models.length ? (
+              <p role="status" className="px-2 text-[13px] text-quiet">
+                {modelStatus.state === 'loading' ? '正在连接模型…' : '模型暂不可用，点顶部模型名称可重新连接。'}
+              </p>
+            ) : null}
             {uploading ? <p role="status" className="px-2 text-[13px] text-quiet">正在转换 EPUB…</p> : null}
             {active?.book ? (
               <button

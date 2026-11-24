@@ -1,4 +1,5 @@
 import type { Chapter } from './store'
+import { createParser } from 'eventsource-parser'
 
 /** Shape returned by `/api/models`. */
 export interface ModelOption {
@@ -176,16 +177,23 @@ export class LumenClient {
       throw new ApiError(data.error ?? '模型列表获取失败。', response.status)
     }
     const data = (await response.json()) as { data?: RawModel[] } | RawModel[]
-    const list = Array.isArray(data) ? data : (data.data ?? [])
+    const list = Array.isArray(data) ? data : data?.data
+    if (!Array.isArray(list)) throw new ApiError('模型列表格式异常，请检查模型服务。', 502)
+    const ids = new Set<string>()
     return list
-      .filter((item): item is RawModel & { id: string } =>
-        Boolean(item?.id) && (item.type ?? 'chat') === 'chat',
-      )
+      .filter((item): item is RawModel & { id: string } => {
+        if (typeof item?.id !== 'string' || !item.id.trim() || ids.has(item.id)) return false
+        if ((item.type ?? 'chat') !== 'chat') return false
+        ids.add(item.id)
+        return true
+      })
       .map(item => {
         const contextTokens = readContextTokens(item)
         const outputTokens = [item.limit?.output, item.max_output_tokens]
           .find((limit): limit is number => Number.isSafeInteger(limit) && (limit ?? 0) > 0)
-        const protocol = (['chat-completions', 'responses', 'messages'] as const).find(value => item.api?.[value])
+        const protocols = ['chat-completions', 'responses', 'messages'] as const
+        const protocol = protocols.find(value => value === item.recommended_api)
+          ?? protocols.find(value => item.api?.[value])
         return {
           id: item.id,
           name: item.name || item.id,
@@ -236,42 +244,39 @@ export class LumenClient {
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
-    let buffer = ''
     let completed = false
     let failure: ApiError | null = null
+    const parser = createParser({
+      maxBufferSize: 8 * 1024 * 1024,
+      onError(error) {
+        if (error.type === 'max-buffer-size-exceeded') throw new ApiError('单条回复数据过大，连接已中止。', 200)
+      },
+      onEvent({ data }) {
+        if (completed) return
+        let event: ChatEvent
+        try {
+          event = JSON.parse(data) as ChatEvent
+        } catch {
+          throw new ApiError('回复数据格式异常，回答未完整接收。请重试。', 200)
+        }
+        if (!event || typeof event !== 'object' || Array.isArray(event)) throw new ApiError('回复数据格式异常。', 200)
+        if ((event.type === 'text' || event.type === 'reasoning') && typeof event.text !== 'string') {
+          throw new ApiError('回复数据格式异常。', 200)
+        }
+        if (event.type === 'done') completed = true
+        if (event.type === 'error') failure = new ApiError(event.error || '模型服务返回了错误。', 200, event.code)
+        onEvent(event)
+      },
+    })
 
     try {
-      for (;;) {
+      while (!completed) {
         const { done, value } = await reader.read()
+        parser.feed(done ? decoder.decode() + '\n\n' : decoder.decode(value, { stream: true }))
         if (done) break
-        buffer += decoder.decode(value, { stream: true })
-
-        // SSE frames are separated by a blank line; the tail may be partial.
-        let split = buffer.indexOf('\n\n')
-        while (split !== -1) {
-          const frame = buffer.slice(0, split)
-          buffer = buffer.slice(split + 2)
-          split = buffer.indexOf('\n\n')
-
-          const payload = frame
-            .split('\n')
-            .filter(line => line.startsWith('data:'))
-            .map(line => line.slice(5).trim())
-            .join('')
-          if (!payload) continue
-
-          let event: ChatEvent
-          try {
-            event = JSON.parse(payload) as ChatEvent
-          } catch {
-            continue
-          }
-          if (event.type === 'done') completed = true
-          if (event.type === 'error') failure = new ApiError(event.error, 200, event.code)
-          onEvent(event)
-        }
       }
     } finally {
+      void reader.cancel().catch(() => {})
       reader.releaseLock()
     }
 

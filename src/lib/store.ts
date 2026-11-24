@@ -162,7 +162,12 @@ export function saveModel(model: string): void {
 
 /* ----------------------------------------------------------- conversations */
 
+// A failed IndexedDB write must win over the older database snapshot on reload.
+const pendingConversationsKey = 'lumen.conversations.pending.v1'
+
 export function loadConversations(): Conversation[] {
+  const pending = readJson<unknown>(pendingConversationsKey, null)
+  if (Array.isArray(pending)) return validConversations(pending)
   return validConversations(readJson(KEYS.conversations, []))
 }
 
@@ -183,6 +188,8 @@ function validConversations(stored: unknown): Conversation[] {
 }
 
 export async function restoreConversations(): Promise<Conversation[]> {
+  const pending = readJson<unknown>(pendingConversationsKey, null)
+  if (Array.isArray(pending)) return validConversations(pending)
   const db = await openDb()
   const current = await tx(db, 'kv', 'readonly', store => store.get('conversations-v2'))
   if (Array.isArray(current)) return validConversations(current)
@@ -201,8 +208,14 @@ export async function saveConversations(conversations: Conversation[]): Promise<
   try {
     const db = await openDb()
     await tx(db, 'kv', 'readwrite', store => store.put(conversations, 'conversations-v2'))
+    try { localStorage.removeItem(pendingConversationsKey) } catch {}
   } catch {
-    writeJson(KEYS.conversations, conversations)
+    try {
+      localStorage.setItem(pendingConversationsKey, JSON.stringify(conversations))
+      console.warn('IndexedDB 写入失败，对话已暂存到本机备用存储。')
+    } catch {
+      throw new Error('本机储存空间不足或不可用，对话尚未保存。请保持页面打开并释放储存空间。')
+    }
   }
 }
 
@@ -275,7 +288,7 @@ interface StoredChapters {
 let dbPromise: Promise<IDBDatabase> | null = null
 
 function openDb(): Promise<IDBDatabase> {
-  dbPromise ??= new Promise((resolve, reject) => {
+  dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
     request.onupgradeneeded = () => {
       const db = request.result
@@ -287,8 +300,15 @@ function openDb(): Promise<IDBDatabase> {
         db.createObjectStore(CHAPTER_STORE, { keyPath: 'id' })
       }
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      const db = request.result
+      db.onversionchange = () => { db.close(); dbPromise = null }
+      resolve(db)
+    }
     request.onerror = () => reject(request.error)
+  }).catch(error => {
+    dbPromise = null
+    throw error
   })
   return dbPromise
 }

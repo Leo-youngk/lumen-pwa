@@ -17,10 +17,8 @@ export function providerRoute(baseUrl, model, protocol) {
   return '/chat/completions'
 }
 
-const effortLevels = new Set(['none', 'on', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
-
 export function providerReasoningParams(endpoint, effort, maxTokens) {
-  if (!effortLevels.has(effort)) return {}
+  if (typeof effort !== 'string' || !effort.trim()) return {}
   if (endpoint === '/responses') {
     return effort === 'on' ? {} : { reasoning: { effort } }
   }

@@ -161,11 +161,14 @@ export function Composer({
         />
 
         <button
-          type={streaming ? 'button' : 'submit'}
+          type="button"
           onMouseDown={event => {
             if (document.activeElement === field.current) event.preventDefault()
           }}
-          onClick={streaming ? onStop : undefined}
+          onClick={() => {
+            if (streaming) onStop?.()
+            else submit()
+          }}
           disabled={!streaming && !ready}
           aria-label={streaming ? '停止生成' : '发送'}
           className={cn(

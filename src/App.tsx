@@ -14,6 +14,7 @@ import { useLumen } from '@/state/LumenContext'
 import { useTheme, useViewport } from '@/lib/viewport'
 import { useServiceWorker } from '@/lib/useServiceWorker'
 import { cn } from '@/lib/cn'
+import { clearChatDraft } from '@/hooks/useChatDraft'
 
 type Route = 'home' | 'chat' | 'history' | 'settings'
 
@@ -21,8 +22,10 @@ export function App() {
   const {
     status, retrySession, settings, active, activeId, streaming, openConversation, startConversation,
     updateConversation, togglePin, clearAll, deleteConversation, conversations,
+    storageError,
   } = useLumen()
   const [route, setRoute] = useState<Route>('home')
+  const settingsReturn = useRef<Route>('home')
   const [homeKey, setHomeKey] = useState(0)
   const navigationRevision = useRef(0)
   const [drawer, setDrawer] = useState(false)
@@ -38,14 +41,16 @@ export function App() {
   useServiceWorker(status === 'checking' || streaming || uploading, () => saveConversations(conversations))
 
   const navigate = useCallback((next: Route) => {
+    if (next === 'settings' && route !== 'settings') settingsReturn.current = route
     navigationRevision.current += 1
     setDrawer(false)
     setOptions(false)
     if (next === 'home') openConversation(null)
     setRoute(next)
-  }, [openConversation])
+  }, [openConversation, route])
 
   const newConversation = useCallback(() => {
+    clearChatDraft('home')
     setHomeKey(key => key + 1)
     navigate('home')
   }, [navigate])
@@ -137,7 +142,7 @@ export function App() {
         <main className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
           <Activity mode={route === 'home' || route === 'chat' ? 'visible' : 'hidden'}>
             <ChatScreen
-              homeKey={homeKey}
+              key={homeKey}
               onOpenDrawer={() => setDrawer(true)}
               onOpenOptions={() => setOptions(true)}
               onOpenModels={() => setModels(true)}
@@ -154,7 +159,7 @@ export function App() {
           ) : null}
 
           {route === 'settings' ? (
-            <SettingsScreen onBack={() => navigate('home')} onOpenModels={() => setModels(true)} />
+            <SettingsScreen onBack={() => navigate(settingsReturn.current)} onOpenModels={() => setModels(true)} />
           ) : null}
         </main>
       </div>
@@ -234,14 +239,14 @@ export function App() {
         </div>
       </Sheet> : null}
 
-      {uploadError ? (
+      {uploadError || storageError ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 z-40 flex justify-center px-4">
           <p
             role="alert"
             className="pointer-events-auto max-w-[420px] rounded-[12px] bg-accent-orange px-3.5 py-2.5 text-[13.5px] leading-snug text-accent-orange-ink shadow-lg"
             onClick={() => setUploadError('')}
           >
-            {uploadError}
+            {uploadError || storageError}
           </p>
         </div>
       ) : null}
