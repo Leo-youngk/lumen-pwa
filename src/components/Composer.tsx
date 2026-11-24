@@ -146,8 +146,9 @@ export function Composer({
           pickFile(event.dataTransfer.files[0])
         }}
         className={cn(
-          'relative flex items-end gap-1.5 rounded-[28px] px-2 py-2',
-          'glass-field',
+          'relative flex items-end gap-2 rounded-[28px] px-2.5 py-2',
+          'bg-surface',
+          'field-card',
           'transition-[box-shadow] duration-200 ease-(--ease-enter)',
           dragging && 'ring-2 ring-brand/40',
         )}
@@ -211,8 +212,8 @@ export function Composer({
               streaming
                 ? 'bg-ink text-canvas'
                 : ready
-                  ? 'bg-brand text-brand-contrast'
-                  : 'text-quiet opacity-60',
+                  ? 'bg-(--color-action) text-(--color-action-ink)'
+                  : 'bg-(--separator-strong) text-quiet',
             )}
           >
             <Icon

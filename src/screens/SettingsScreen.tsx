@@ -31,10 +31,10 @@ export function SettingsScreen({
   const themeLabel = THEMES.find(item => item.value === settings.theme)?.label ?? '浅色'
 
   return (
-    <div className="relative h-full min-h-0">
+    <div className="screen-enter relative h-full min-h-0">
       <NavigationBar
         title="设置"
-        collapsed={collapsed}
+        showTitle={collapsed}
         onBack={onBack}
         trailing={
           <BarButton bold onClick={onBack}>
@@ -46,7 +46,7 @@ export function SettingsScreen({
       <div
         ref={scroll}
         className="scroll-pane h-full"
-        style={{ paddingTop: 'var(--nav-height)' }}
+        style={{ paddingTop: 64 }}
       >
         <div className="mx-auto w-full max-w-[720px] px-1 pt-2">
           <CollapsingLargeTitle title="设置" scrollRef={scroll} onChange={onCollapse} />

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Composer } from '@/components/Composer'
-import { Icon, IconButton } from '@/components/Icon'
-import { NavigationBar } from '@/components/NavigationBar'
+import { Icon } from '@/components/Icon'
+import { GlassButton, NavigationBar } from '@/components/NavigationBar'
 import { useLumen } from '@/state/LumenContext'
 
 export interface HomeScreenProps {
@@ -33,12 +33,11 @@ export function HomeScreen({
   const [draft, setDraft] = useState('')
 
   return (
-    <div className="relative h-full min-h-0">
+    <div className="screen-enter relative h-full min-h-0">
       <NavigationBar
-        divider={false}
-        collapsed={false}
-        leading={<IconButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} />}
-        trailing={<IconButton icon="compose" label="新对话" onClick={onNew} />}
+        showTitle={false}
+        leading={<GlassButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} badge />}
+        trailing={<GlassButton icon="compose" label="新对话" onClick={onNew} />}
       />
 
       <div className="scroll-pane h-full" style={{ paddingTop: 'var(--nav-height)' }}>

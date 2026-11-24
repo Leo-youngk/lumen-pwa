@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Composer } from '@/components/Composer'
-import { Icon, IconButton } from '@/components/Icon'
+import { Icon } from '@/components/Icon'
 import { AssistantBubble, UserBubble } from '@/components/Message'
-import { NavigationBar } from '@/components/NavigationBar'
+import { GlassButton, NavigationBar } from '@/components/NavigationBar'
 import { useLumen } from '@/state/LumenContext'
 import { cn } from '@/lib/cn'
 import { ModelPill } from './HomeScreen'
@@ -114,12 +114,11 @@ export function ChatScreen({
   if (!active) return null
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className="screen-enter relative flex h-full min-h-0 flex-col">
       <NavigationBar
-        divider={false}
-        leading={<IconButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} />}
+        leading={<GlassButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} badge />}
         title={active.title}
-        trailing={<IconButton icon="more" label="更多" onClick={onOpenOptions} />}
+        trailing={<GlassButton icon="more" label="更多" onClick={onOpenOptions} />}
       />
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -127,7 +126,7 @@ export function ChatScreen({
           ref={feed}
           onScroll={onScroll}
           className="scroll-pane min-h-0 flex-1 overscroll-contain"
-          style={{ paddingTop: 'var(--nav-height)', paddingBottom: 'calc(var(--composer-height, 96px) + 12px)' }}
+          style={{ paddingTop: 64, paddingBottom: 'calc(var(--composer-height, 96px) + 12px)' }}
         >
           <div className={cn('mx-auto w-full max-w-[680px] pt-2', settings.compactMode ? 'pb-2' : 'pb-4')}>
             {messages.map((message, index) =>

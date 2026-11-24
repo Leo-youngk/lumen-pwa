@@ -47,6 +47,10 @@
   --color-accent-orange-ink: #9b5020;
   --color-accent-violet: #f2eff7;
 
+  /* System blue, used only for the primary action and selection. */
+  --color-action: #007aff;
+  --color-action-ink: #ffffff;
+
   --color-bubble: #f4f4f4;
   --color-sidebar: #f9f9f9;
   --color-danger: #d92d20;
@@ -227,6 +231,9 @@
   --color-accent-orange-ink: #f1ba97;
   --color-accent-violet: #362f45;
 
+  --color-action: #0a84ff;
+  --color-action-ink: #ffffff;
+
   --color-bubble: #2f2f2f;
   --color-sidebar: #171717;
   --color-danger: #ff6b6b;
@@ -267,6 +274,9 @@
   --color-brand-ink: #000000;
   --color-brand-soft: #ebebeb;
   --color-brand-contrast: #ffffff;
+  --color-action: #007aff;
+  --color-action-ink: #ffffff;
+
   --color-bubble: #ebebeb;
   --color-sidebar: #f2f2f2;
   --panel-opacity: 74%;
@@ -292,6 +302,9 @@
   --color-brand-ink: #221f18;
   --color-brand-soft: #f1ece1;
   --color-brand-contrast: #fffdf9;
+  --color-action: #007aff;
+  --color-action-ink: #ffffff;
+
   --color-bubble: #f1ece1;
   --color-sidebar: #f3eee3;
   --panel-opacity: 74%;
@@ -412,6 +425,15 @@
 }
 
 /* Input field on glass: thinner frost so the text stays crisp. */
+/* Composer surface: a solid card, not glass. The reference keeps the field
+   brighter than the canvas and separates it with a hairline, so text never
+   competes with a moving backdrop. */
+@utility field-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-edge);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 10px 30px -22px rgb(0 0 0 / 22%);
+}
+
 @utility glass-field {
   background: color-mix(in srgb, var(--color-surface) var(--glass-opacity), transparent);
   -webkit-backdrop-filter: blur(20px) saturate(var(--glass-saturate));
@@ -470,6 +492,15 @@
     transform: translateY(-4px);
     opacity: 1;
   }
+}
+
+@keyframes screen-enter {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+.screen-enter {
+  animation: screen-enter 240ms var(--ease-enter) both;
 }
 
 @keyframes lumen-fade-up {
