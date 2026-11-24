@@ -37,7 +37,6 @@ export function ChatScreen({
     streaming,
     streamingId,
     readingProgress,
-    usage,
     error,
     clearError,
     settings,
@@ -128,7 +127,7 @@ export function ChatScreen({
           ref={feed}
           onScroll={onScroll}
           className="scroll-pane min-h-0 flex-1 overscroll-contain"
-          style={{ paddingTop: 'var(--nav-height)' }}
+          style={{ paddingTop: 'var(--nav-height)', paddingBottom: 'calc(var(--composer-height, 96px) + 12px)' }}
         >
           <div className={cn('mx-auto w-full max-w-[680px] pt-2', settings.compactMode ? 'pb-2' : 'pb-4')}>
             {messages.map((message, index) =>
@@ -204,7 +203,7 @@ export function ChatScreen({
         onStop={stop}
         streaming={generating}
         disabled={uploading || (streaming && !generating)}
-        className="mx-auto w-full max-w-[680px]"
+        className="absolute inset-x-0 bottom-0 z-10 mx-auto w-full max-w-[680px]"
         leading={selection ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-start px-4 pb-2">
             <button
@@ -260,15 +259,10 @@ export function ChatScreen({
         enterToSend={settings.enterToSend}
         placeholder={uploading ? '正在转换 EPUB…' : generating ? '正在生成回答…' : active.book && !messages.length ? '向这本书提问…' : '继续追问…'}
         trailing={
-          <>
-            <span className="text-[11px] tabular-nums text-quiet" title={`本设备已记录 ${usage.total.toLocaleString()} tokens，${usage.unreported} 次请求无用量回报`}>
-              {usage.total ? new Intl.NumberFormat('zh-CN', { notation: 'compact' }).format(usage.total) : usage.unreported ? '—' : '0'} tokens
-            </span>
-            <ModelPill
-              label={models.length ? modelLabel(active.model || model) : '默认模型'}
-              onClick={onOpenModels}
-            />
-          </>
+          <ModelPill
+            label={models.length ? modelLabel(active.model || model) : '默认模型'}
+            onClick={onOpenModels}
+          />
         }
       />
     </div>

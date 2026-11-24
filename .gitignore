@@ -9,3 +9,6 @@ __pycache__/
 .DS_Store
 *.log
 *.tsbuildinfo
+
+# screenshot harness output (Chrome profile can hold file locks)
+.shots/

@@ -105,7 +105,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        'relative -ml-1.5 grid size-11 shrink-0 place-items-center rounded-full text-ink',
+        'relative grid size-11 shrink-0 place-items-center rounded-full text-ink',
         'transition-[transform,background-color,opacity] duration-150 ease-(--ease-tap)',
         'active:scale-[0.92] disabled:pointer-events-none disabled:opacity-35',
         variant === 'glass' && 'glass-chrome',
@@ -114,7 +114,7 @@ export function IconButton({
         className,
       )}
     >
-      <Icon name={icon} />
+      <Icon name={icon} strokeWidth={1.9} />
     </button>
   )
 }

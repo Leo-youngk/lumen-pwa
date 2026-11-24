@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { cn } from '@/lib/cn'
 import { Icon, IconButton } from './Icon'
 
@@ -64,6 +64,22 @@ export function Composer({
   const localField = useRef<HTMLTextAreaElement>(null)
   const field = inputRef ?? localField
   const upload = useRef<HTMLInputElement>(null)
+  const root = useRef<HTMLDivElement>(null)
+
+  // Publish the dock's height so the transcript can pad for it and still scroll
+  // *under* the bar. Without content sliding beneath, the glass has nothing to
+  // refract and the bar reads as a plain white strip.
+  useEffect(() => {
+    const element = root.current
+    if (!element) return
+    const apply = () => {
+      document.documentElement.style.setProperty('--composer-height', `${element.offsetHeight}px`)
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
   const ready = value.trim().length > 0 && !disabled && !streaming
@@ -97,9 +113,11 @@ export function Composer({
 
   return (
     <div
+      ref={root}
       className={cn('relative shrink-0 px-3', docked && 'pb-2.5', className)}
     >
       {leading}
+      {context ? <div className="mb-2 px-1">{context}</div> : null}
 
       <form
         onSubmit={event => {
@@ -128,20 +146,42 @@ export function Composer({
           pickFile(event.dataTransfer.files[0])
         }}
         className={cn(
-          'relative flex flex-col gap-1 rounded-[26px] px-3.5 pt-2.5 pb-2',
-          'bg-field',
-          'shadow-[0_1px_2px_rgb(0_0_0/4%),0_8px_24px_-20px_rgb(0_0_0/30%)]',
-          'transition-[box-shadow,transform] duration-200 ease-(--ease-enter)',
+          'relative flex items-end gap-1.5 rounded-[28px] px-2 py-2',
+          'glass-field',
+          'transition-[box-shadow] duration-200 ease-(--ease-enter)',
           dragging && 'ring-2 ring-brand/40',
         )}
       >
         {dragging ? (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-[26px] bg-brand-soft/80 text-[15px] font-medium text-brand-ink">
+          <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-[28px] bg-brand-soft/80 text-[15px] font-medium text-brand-ink">
             松开以上传 EPUB
           </div>
         ) : null}
 
-        {context}
+        {onAttach ? (
+          <>
+            <input
+              ref={upload}
+              type="file"
+              accept=".epub,application/epub+zip"
+              hidden
+              onChange={event => {
+                pickFile(event.target.files?.[0])
+                event.target.value = ''
+              }}
+            />
+            <IconButton
+              icon="plus"
+              label={attachLabel}
+              onClick={() => upload.current?.click()}
+              disabled={disabled || streaming}
+              className="ml-0 size-9 text-secondary"
+            />
+          </>
+        ) : (
+          accessory
+        )}
+
         <textarea
           ref={field}
           rows={1}
@@ -153,61 +193,35 @@ export function Composer({
           autoComplete="off"
           enterKeyHint={enterToSend ? 'send' : 'enter'}
           className={cn(
-            'max-h-28 w-full resize-none bg-transparent px-0.5 text-[16px] leading-[1.45]',
+            'max-h-28 min-h-[24px] flex-1 resize-none bg-transparent py-1.5 text-[16px] leading-[1.4]',
             'outline-none placeholder:text-quiet',
           )}
         />
 
-        <div className="flex items-center gap-1.5">
-          {onAttach ? (
-            <>
-              <input
-                ref={upload}
-                type="file"
-                accept=".epub,application/epub+zip"
-                hidden
-                onChange={event => {
-                  pickFile(event.target.files?.[0])
-                  event.target.value = ''
-                }}
-              />
-              <IconButton
-                icon="plus"
-                label={attachLabel}
-                onClick={() => upload.current?.click()}
-                disabled={disabled || streaming}
-                className="-ml-1.5 size-9 bg-content text-ink hover:bg-content"
-              />
-            </>
-          ) : (
-            accessory
-          )}
-
-          <div className="ml-auto flex items-center gap-1.5">
-            {trailing}
-            <button
-              type={streaming ? 'button' : 'submit'}
-              onClick={streaming ? onStop : undefined}
-              disabled={!streaming && !ready}
-              aria-label={streaming ? '停止生成' : '发送'}
-              className={cn(
-                'grid size-9 place-items-center rounded-full',
-                'transition-[transform,background-color,opacity] duration-150 ease-(--ease-tap) active:scale-90',
-                streaming
-                  ? 'bg-ink text-canvas'
-                  : ready
-                    ? 'bg-brand text-brand-contrast'
-                    : 'bg-edge text-quiet opacity-70',
-              )}
-            >
-              <Icon
-                name={streaming ? 'stop' : 'send'}
-                size={streaming ? 16 : 19}
-                strokeWidth={streaming ? 0 : 2.2}
-                className={streaming ? 'fill-current' : undefined}
-              />
-            </button>
-          </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {trailing}
+          <button
+            type={streaming ? 'button' : 'submit'}
+            onClick={streaming ? onStop : undefined}
+            disabled={!streaming && !ready}
+            aria-label={streaming ? '停止生成' : '发送'}
+            className={cn(
+              'grid size-9 place-items-center rounded-full',
+              'transition-[transform,background-color,opacity] duration-150 ease-(--ease-tap) active:scale-90',
+              streaming
+                ? 'bg-ink text-canvas'
+                : ready
+                  ? 'bg-brand text-brand-contrast'
+                  : 'text-quiet opacity-60',
+            )}
+          >
+            <Icon
+              name={streaming ? 'stop' : 'send'}
+              size={streaming ? 16 : 19}
+              strokeWidth={streaming ? 0 : 2.2}
+              className={streaming ? 'fill-current' : undefined}
+            />
+          </button>
         </div>
       </form>
     </div>

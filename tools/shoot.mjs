@@ -13,7 +13,7 @@ import { join } from 'node:path'
 
 const OUT = process.argv[2] || '/tmp/shots'
 const CHROME = process.env.CHROME || '/usr/local/bin/google-chrome'
-const PORT = 9222
+const PORT = Number(process.env.CDP_PORT) || 9222
 const BASE = 'http://localhost:4173'
 const TOKEN = 'local-test-only'
 
@@ -88,7 +88,6 @@ async function main() {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-gpu',
-      '--force-device-scale-factor=3',
       '--window-size=393,852',
       'about:blank',
     ],
@@ -100,6 +99,7 @@ async function main() {
   await cdp.ready
 
   await cdp.send('Page.enable')
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
   await cdp.send('Runtime.enable')
   await cdp.send('Emulation.setDeviceMetricsOverride', {
     width: VIEWPORT.width,
@@ -149,19 +149,18 @@ async function main() {
   await goto(BASE)
   await shot('01-signin')
 
+  const needsLogin = await evaluate(`Boolean(document.querySelector('input[type="password"]'))`)
+  if (needsLogin) {
   console.log('→ sign in')
-  await evaluate(`
-    (() => {
-      const input = document.querySelector('input[type="password"]')
-      if (!input) return 'no input'
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
-      setter.call(input, '${TOKEN}')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      return 'filled'
-    })()
-  `)
+  // Real typing through CDP. A synthetic `input` event leaves React's value
+  // tracker in sync with the DOM, so onChange never fires and the controlled
+  // field snaps straight back to its empty state.
+  await evaluate(`document.querySelector('input[type="password"]')?.focus()`)
+  await sleep(120)
+  await cdp.send('Input.insertText', { text: TOKEN })
   await sleep(250)
   await evaluate(`document.querySelector('form button[type="submit"]').click()`)
+  }
   await sleep(2200)
 
   const authed = await evaluate(`Boolean(document.querySelector('textarea[aria-label="输入消息"]'))`)

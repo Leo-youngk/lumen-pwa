@@ -46,12 +46,9 @@ export function HomeScreen({
           className="mx-auto flex min-h-full w-full max-w-[680px] flex-col justify-center px-4"
           style={{ paddingBottom: 'calc(var(--safe-bottom) + 16vh)' }}
         >
-          <h1 className="mb-1 text-center text-[28px] leading-tight font-semibold tracking-[-0.02em] text-ink">
+          <h1 className="mb-8 text-center text-[24px] leading-tight font-medium tracking-[-0.01em] text-ink">
             有什么可以帮你？
           </h1>
-          <p className="mb-7 text-center text-[14px] text-quiet">
-            只带当前对话，不读取历史
-          </p>
 
           <Composer
             value={draft}
@@ -66,10 +63,13 @@ export function HomeScreen({
             enterToSend={settings.enterToSend}
             placeholder={uploading ? '正在转换 EPUB…' : '问点什么…'}
             docked={false}
-            trailing={
-              <ModelPill label={models.length ? modelLabel(model) : '模型'} onClick={onOpenModels} />
-            }
           />
+
+          <div className="mt-3 flex justify-center">
+            <div className="rounded-full bg-field px-1">
+              <ModelPill label={models.length ? modelLabel(model) : '模型'} onClick={onOpenModels} />
+            </div>
+          </div>
         </div>
       </div>
     </div>
