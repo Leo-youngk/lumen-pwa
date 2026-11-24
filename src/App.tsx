@@ -6,6 +6,7 @@ import { ModelSheet, ScopeSheet } from '@/screens/ModelSheet'
 import { SettingsScreen } from '@/screens/SettingsScreen'
 import { SignInScreen } from '@/screens/SignInScreen'
 import { Sheet } from '@/components/Sheet'
+import { SideDrawer } from '@/components/SideDrawer'
 import { List, Row } from '@/components/List'
 import { Icon } from '@/components/Icon'
 import { LumenClient } from '@/lib/api'
@@ -20,11 +21,12 @@ type Route = 'home' | 'chat' | 'history' | 'settings'
 export function App() {
   const {
     status, settings, active, activeId, streaming, openConversation, startConversation,
-    updateConversation, togglePin, clearAll, deleteConversation,
+    updateConversation, togglePin, clearAll, deleteConversation, conversations,
   } = useLumen()
   const [route, setRoute] = useState<Route>('home')
   const [homeKey, setHomeKey] = useState(0)
   const navigationRevision = useRef(0)
+  const [drawer, setDrawer] = useState(false)
   const [models, setModels] = useState(false)
   const [scope, setScope] = useState(false)
   const [options, setOptions] = useState(false)
@@ -117,9 +119,9 @@ export function App() {
           <Activity mode={route === 'home' ? 'visible' : 'hidden'}>
             <HomeScreen
               key={homeKey}
-              onOpenHistory={() => navigate('history')}
-              onOpenSettings={() => navigate('settings')}
+              onOpenDrawer={() => setDrawer(true)}
               onOpenModels={() => setModels(true)}
+              onNew={newConversation}
               onUpload={file => void upload(file, null)}
               uploading={uploading}
               onSent={() => navigate('chat')}
@@ -147,7 +149,7 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => navigate('home')}
-                  className="mt-3 rounded-full bg-brand px-4 py-2 text-[15px] text-white active:opacity-80"
+                  className="mt-3 rounded-full bg-brand px-4 py-2 text-[15px] text-brand-contrast active:opacity-80"
                 >
                   回到首页
                 </button>
@@ -167,6 +169,20 @@ export function App() {
 
       <ModelSheet open={models} onClose={() => setModels(false)} />
       <ScopeSheet open={scope} onClose={() => setScope(false)} />
+
+      <SideDrawer
+        open={drawer}
+        onClose={() => setDrawer(false)}
+        conversations={conversations}
+        activeId={activeId}
+        onOpen={openChat}
+        onNew={newConversation}
+        onSettings={() => navigate('settings')}
+        onDelete={id => {
+          deleteConversation(id)
+          if (id === activeId) navigate('home')
+        }}
+      />
 
       <Sheet open={options} title="对话选项" onClose={() => setOptions(false)}>
         <div className="-mx-4">
@@ -264,8 +280,8 @@ function Sidebar({
       className="hidden w-[268px] shrink-0 flex-col border-r border-(--separator) bg-sidebar lg:flex"
     >
       <div className="flex items-center gap-2 px-4 pt-4 pb-3" style={{ paddingTop: 'calc(var(--safe-top) + 14px)' }}>
-        <span className="size-7 rounded-[8px] bg-[radial-gradient(120%_120%_at_28%_18%,#d9e9df_0%,#a9c9b8_38%,#4f7f6c_74%,#2b4f42_100%)]" />
-        <span className="text-[16px] font-semibold tracking-tight">Lumen</span>
+        <span className="grid size-7 place-items-center rounded-[8px] bg-ink text-[13px] font-bold text-brand-contrast">L</span>
+        <span className="text-[15px] font-semibold tracking-tight">Lumen</span>
       </div>
 
       <div className="px-3">

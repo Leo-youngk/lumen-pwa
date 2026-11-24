@@ -5,18 +5,26 @@ import { NavigationBar } from '@/components/NavigationBar'
 import { useLumen } from '@/state/LumenContext'
 
 export interface HomeScreenProps {
-  onOpenHistory: () => void
-  onOpenSettings: () => void
+  onOpenDrawer: () => void
   onOpenModels: () => void
+  onNew: () => void
   onUpload: (file: File) => void
   uploading: boolean
   onSent: () => void
 }
 
+/**
+ * New-conversation screen.
+ *
+ * Structure follows the assistant-app convention rather than a generic landing
+ * page: a single question mark as the headline, one field, nothing else. The
+ * block sits slightly above the optical centre — centring it exactly makes the
+ * lower half read as unfinished rather than as breathing room.
+ */
 export function HomeScreen({
-  onOpenHistory,
-  onOpenSettings,
+  onOpenDrawer,
   onOpenModels,
+  onNew,
   onUpload,
   uploading,
   onSent,
@@ -29,12 +37,22 @@ export function HomeScreen({
       <NavigationBar
         divider={false}
         collapsed={false}
-        leading={<IconButton icon="history" label="打开历史" onClick={onOpenHistory} />}
-        trailing={<IconButton icon="settings" label="设置" onClick={onOpenSettings} />}
+        leading={<IconButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} />}
+        trailing={<IconButton icon="compose" label="新对话" onClick={onNew} />}
       />
 
       <div className="scroll-pane h-full" style={{ paddingTop: 'var(--nav-height)' }}>
-        <div className="mx-auto flex min-h-full w-full max-w-[648px] flex-col justify-center px-1 py-5">
+        <div
+          className="mx-auto flex min-h-full w-full max-w-[680px] flex-col justify-center px-4"
+          style={{ paddingBottom: 'calc(var(--safe-bottom) + 16vh)' }}
+        >
+          <h1 className="mb-1 text-center text-[28px] leading-tight font-semibold tracking-[-0.02em] text-ink">
+            有什么可以帮你？
+          </h1>
+          <p className="mb-7 text-center text-[14px] text-quiet">
+            只带当前对话，不读取历史
+          </p>
+
           <Composer
             value={draft}
             onChange={setDraft}

@@ -15,10 +15,10 @@ const Markdown = lazy(() =>
 
 export const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
   return (
-    <div className="flex justify-end px-4 py-1.5">
+    <div className="flex justify-end px-4 py-2">
       <div
         className={cn(
-          'max-w-[88%] rounded-[14px] bg-bubble px-3.5 py-2.5',
+          'max-w-[88%] rounded-[18px] bg-bubble px-4 py-2.5',
           'text-[15.5px] leading-[1.55] whitespace-pre-wrap break-words',
         )}
       >
@@ -39,15 +39,18 @@ export const AssistantBubble = memo(function AssistantBubble({
   compact,
   fontSize,
   lineHeight,
+  onRetry,
 }: {
   message: Message
   streaming: boolean
   compact: boolean
   fontSize: number
   lineHeight: number
+  onRetry?: () => void
 }) {
   const [showReasoning, setShowReasoning] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'done' | 'error'>('idle')
+  const [speaking, setSpeaking] = useState(false)
   const hasReasoning = Boolean(message.reasoning?.trim())
   const empty = !message.content.trim()
 
@@ -56,6 +59,11 @@ export const AssistantBubble = memo(function AssistantBubble({
     const timer = window.setTimeout(() => setCopyStatus('idle'), 1500)
     return () => window.clearTimeout(timer)
   }, [copyStatus])
+
+  // Stop the voice if the message unmounts (navigating away mid-read).
+  useEffect(() => () => {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+  }, [])
 
   async function copyAnswer() {
     try {
@@ -66,8 +74,26 @@ export const AssistantBubble = memo(function AssistantBubble({
     }
   }
 
+  function speak() {
+    if (!('speechSynthesis' in window)) return
+    if (speaking) {
+      window.speechSynthesis.cancel()
+      setSpeaking(false)
+      return
+    }
+    const text = plainText(message.content)
+    if (!text) return
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.lang = 'zh-CN'
+    utterance.onend = () => setSpeaking(false)
+    utterance.onerror = () => setSpeaking(false)
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(utterance)
+    setSpeaking(true)
+  }
+
   return (
-    <div className="px-4 py-2">
+    <div className="px-4 py-3">
       {hasReasoning ? (
         <div className="mb-1.5">
           <button
@@ -106,16 +132,18 @@ export const AssistantBubble = memo(function AssistantBubble({
       {message.incomplete ? <p className="mt-1 text-[12px] text-quiet">回答未完成</p> : null}
 
       {!empty && !streaming ? (
-        <div className="mt-1 flex items-center gap-2">
-          <button
-            type="button"
+        <div className="mt-1 flex items-center gap-0.5">
+          <MessageAction
+            icon={copyStatus === 'done' ? 'check' : 'copy'}
+            label={copyStatus === 'done' ? '已复制回答' : '复制回答'}
             onClick={() => void copyAnswer()}
-            aria-label={copyStatus === 'done' ? '已复制回答' : '复制回答'}
-            className="-ml-2 inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-[13px] text-quiet hover:bg-(--separator) active:opacity-60"
-          >
-            <Icon name={copyStatus === 'done' ? 'check' : 'copy'} size={15} />
-            {copyStatus === 'done' ? '已复制' : '复制'}
-          </button>
+          />
+          {onRetry ? <MessageAction icon="refresh" label="重新生成" onClick={onRetry} /> : null}
+          <MessageAction
+            icon={speaking ? 'stop' : 'speaker'}
+            label={speaking ? '停止朗读' : '朗读回答'}
+            onClick={speak}
+          />
           <span role="status" className={copyStatus === 'error' ? 'text-[12px] text-quiet' : 'sr-only'}>
             {copyStatus === 'error' ? '复制失败，请选中文字后复制。' : copyStatus === 'done' ? '已复制回答' : ''}
           </span>
@@ -130,4 +158,43 @@ export const AssistantBubble = memo(function AssistantBubble({
 /** Pre-Markdown fallback: preserves line breaks, nothing else. */
 function RawText({ text }: { text: string }) {
   return <div className="whitespace-pre-wrap">{text}</div>
+}
+
+/** Icon-only action under an answer, matching the assistant-app convention. */
+function MessageAction({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: 'copy' | 'check' | 'refresh' | 'speaker' | 'stop'
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="-ml-1.5 grid size-9 place-items-center rounded-full text-quiet transition-colors duration-150 hover:text-ink active:bg-(--separator)"
+    >
+      <Icon name={icon} size={16} strokeWidth={1.9} />
+    </button>
+  )
+}
+
+/** Strip Markdown syntax before handing text to the speech synthesiser. */
+function plainText(markdown: string) {
+  return markdown
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }

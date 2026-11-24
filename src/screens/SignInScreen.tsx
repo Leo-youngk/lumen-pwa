@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Icon } from '@/components/Icon'
 import { useLumen } from '@/state/LumenContext'
 import { cn } from '@/lib/cn'
 
@@ -23,12 +24,10 @@ export function SignInScreen() {
       <form onSubmit={submit} className="m-auto w-full max-w-[380px] shrink-0">
         <div
           aria-hidden="true"
-          className={cn(
-            'mb-6 size-[76px] rounded-[23px]',
-            'bg-[radial-gradient(120%_120%_at_28%_18%,#d9e9df_0%,#a9c9b8_38%,#4f7f6c_74%,#2b4f42_100%)]',
-            'shadow-[0_1px_0_rgb(255_255_255/50%)_inset,0_16px_40px_-18px_rgb(36_80_68/55%)]',
-          )}
-        />
+          className="mb-6 grid size-[64px] place-items-center rounded-[18px] bg-ink text-brand-contrast"
+        >
+          <Icon name="logo" size={30} strokeWidth={1.6} />
+        </div>
         <h1 className="text-[28px] leading-tight font-bold tracking-[-0.02em]">进入 Lumen</h1>
         <p className="mt-2 mb-7 text-[15px] leading-relaxed text-quiet">
           输入访问令牌，打开你的个人对话与书库。
@@ -42,7 +41,7 @@ export function SignInScreen() {
             onChange={event => setToken(event.target.value)}
             autoComplete="current-password"
             enterKeyHint="go"
-            className="h-12 w-full rounded-[12px] bg-surface px-3.5 text-[16px] hairline-t hairline-b outline-none focus:ring-2 focus:ring-brand/30"
+            className="h-12 w-full rounded-[12px] bg-field px-3.5 text-[16px] outline-none focus:ring-2 focus:ring-brand/25"
           />
         </label>
 
@@ -56,7 +55,7 @@ export function SignInScreen() {
           type="submit"
           disabled={working || !token.trim()}
           className={cn(
-            'mt-5 h-12 w-full rounded-[12px] bg-brand text-[17px] font-medium text-white',
+            'mt-5 h-12 w-full rounded-[12px] bg-brand text-[17px] font-medium text-brand-contrast',
             'transition-[opacity,transform] duration-150 ease-(--ease-tap) active:scale-[0.985]',
             'disabled:opacity-40',
           )}

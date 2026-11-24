@@ -201,7 +201,7 @@ function ToggleRow({
           className={cn(
             'absolute top-[2px] left-[2px] size-[27px] rounded-full bg-white shadow-[0_1px_3px_rgb(0_0_0/25%)]',
             'transition-transform duration-200 ease-(--ease-spring)',
-            checked && 'translate-x-[20px]',
+            checked && 'translate-x-[20px] bg-(--color-brand-contrast)',
           )}
         />
       </span>
@@ -315,7 +315,7 @@ function AdvancedSheet({ open, onClose, onConnected }: { open: boolean; onClose:
           type="button"
           onClick={() => void save()}
           disabled={connecting}
-          className="h-11 w-full rounded-[12px] bg-brand text-[16px] font-medium text-white active:opacity-80"
+          className="h-11 w-full rounded-[12px] bg-brand text-[16px] font-medium text-brand-contrast active:opacity-80"
         >
           {connecting ? '正在获取模型…' : '连接并选择模型'}
         </button>

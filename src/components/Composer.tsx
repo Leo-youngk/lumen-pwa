@@ -128,16 +128,15 @@ export function Composer({
           pickFile(event.dataTransfer.files[0])
         }}
         className={cn(
-          'relative flex flex-col gap-1 rounded-[22px] px-3.5 pt-2.5 pb-2',
-          'bg-surface',
-          'hairline-x',
-          'shadow-[0_1px_2px_rgb(28_53_44/6%),0_8px_24px_-16px_rgb(28_53_44/28%)]',
+          'relative flex flex-col gap-1 rounded-[26px] px-3.5 pt-2.5 pb-2',
+          'bg-field',
+          'shadow-[0_1px_2px_rgb(0_0_0/4%),0_8px_24px_-20px_rgb(0_0_0/30%)]',
           'transition-[box-shadow,transform] duration-200 ease-(--ease-enter)',
           dragging && 'ring-2 ring-brand/40',
         )}
       >
         {dragging ? (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-[22px] bg-brand-soft/80 text-[15px] font-medium text-brand-ink">
+          <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-[26px] bg-brand-soft/80 text-[15px] font-medium text-brand-ink">
             松开以上传 EPUB
           </div>
         ) : null}
@@ -177,7 +176,7 @@ export function Composer({
                 label={attachLabel}
                 onClick={() => upload.current?.click()}
                 disabled={disabled || streaming}
-                className="-ml-1.5 size-9 bg-field text-ink hover:bg-field"
+                className="-ml-1.5 size-9 bg-content text-ink hover:bg-content"
               />
             </>
           ) : (
@@ -197,8 +196,8 @@ export function Composer({
                 streaming
                   ? 'bg-ink text-canvas'
                   : ready
-                    ? 'bg-brand text-white'
-                    : 'bg-field text-quiet opacity-70',
+                    ? 'bg-brand text-brand-contrast'
+                    : 'bg-edge text-quiet opacity-70',
               )}
             >
               <Icon

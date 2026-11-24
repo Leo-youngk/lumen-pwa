@@ -3,46 +3,53 @@
 /*
  * Lumen design tokens.
  *
- * The palette keeps the paper-and-pine identity of the original app: a warm
- * canvas instead of a blue-tinted neutral, and a deep evergreen as the single
- * accent. Everything else is expressed as a role (canvas / surface / ink /
- * edge) so light and dark stay in sync and components never hardcode a hex.
+ * Default palette is neutral: white paper, black ink, grey field. That is the
+ * one scheme that does not date — ChatGPT, Apple Books and Kindle all land on
+ * it — and it is what the app opens in. Colour is not part of the brand here:
+ * the single accent is black (inverted to white in dark mode).
  *
- * Glass surfaces are the one place iOS convention leaks in: iOS 26 renders
- * bars and sheets as a translucent material over content, not as opaque
- * panels. Those layers are driven by `--glass-*` so the material can be
- * retuned in one place and still degrade to an opaque colour where
- * `backdrop-filter` is unsupported.
+ * The optional themes (dark / mono / cream) retint the same roles. Dark uses
+ * #212121 rather than pure black: on OLED a #000 canvas smears during scroll,
+ * and a slightly raised surface separates cards without adding a border.
+ *
+ * Glass surfaces are the one place iOS convention leaks in: bars and sheets are
+ * a translucent material over content, not opaque panels. Those layers are
+ * driven by `--glass-*` so the material can be retuned in one place and still
+ * degrade to an opaque colour where `backdrop-filter` is unsupported.
  */
 
 @theme {
-  --color-canvas: #f7f5ee;
-  --color-content: #fbfaf6;
+  --color-canvas: #ffffff;
+  --color-content: #ffffff;
   --color-surface: #ffffff;
-  --color-field: #eeede6;
-  --color-edge: #dddcd1;
-  --color-edge-strong: #c9c7ba;
+  --color-field: #f4f4f4;
+  --color-edge: #e5e5e5;
+  --color-edge-strong: #d0d0d0;
 
-  --color-ink: #202920;
-  --color-secondary: #505d57;
-  --color-quiet: #59655e;
+  --color-ink: #0d0d0d;
+  --color-secondary: #4a4a4a;
+  --color-quiet: #8f8f8f;
 
-  --color-brand: #245044;
-  --color-brand-hover: #193e35;
-  --color-brand-ink: #214a3f;
-  --color-brand-soft: #e6eee8;
+  /* Monochrome brand: primary buttons are black-on-white and invert in dark. */
+  --color-brand: #0d0d0d;
+  --color-brand-hover: #000000;
+  --color-brand-ink: #0d0d0d;
+  --color-brand-soft: #f4f4f4;
+  /* Content colour that sits on top of `brand` (button labels). */
+  --color-brand-contrast: #ffffff;
 
-  --color-accent-blue: #e6edf0;
+  /* Semantic tints, only ever used for status, never for brand expression. */
+  --color-accent-blue: #eef2f6;
   --color-accent-blue-ink: #294b60;
-  --color-accent-teal: #eaf7f1;
+  --color-accent-teal: #eaf6f1;
   --color-accent-teal-ink: #147356;
   --color-accent-orange: #fff1e7;
   --color-accent-orange-ink: #9b5020;
-  --color-accent-violet: #e6eee8;
+  --color-accent-violet: #f2eff7;
 
-  --color-bubble: #e7ede7;
-  --color-sidebar: #eeece3;
-  --color-danger: #b9364a;
+  --color-bubble: #f4f4f4;
+  --color-sidebar: #f9f9f9;
+  --color-danger: #d92d20;
 
   --radius-card: 15px;
   --radius-dock: 19px;
@@ -128,15 +135,15 @@
      underlying content has to survive the blur to be perceptible. 62% over a
      24 px blur keeps scrolling rows visible as a soft wash without hurting
      label contrast. */
-  --glass-bar: rgb(252 251 247 / 62%);
-  --glass-chrome: rgb(255 255 255 / 58%);
-  --glass-border: rgb(221 220 209 / 55%);
+  --glass-bar: rgb(255 255 255 / 72%);
+  --glass-chrome: rgb(255 255 255 / 66%);
+  --glass-border: rgb(229 229 229 / 60%);
   --glass-highlight: rgb(255 255 255 / 70%);
-  --glass-shadow: 0 1px 0 rgb(255 255 255 / 55%) inset, 0 12px 32px -18px rgb(28 53 44 / 32%);
+  --glass-shadow: 0 1px 0 rgb(255 255 255 / 60%) inset, 0 12px 32px -18px rgb(0 0 0 / 22%);
 
-  --separator: rgb(60 60 67 / 12%);
-  --separator-strong: rgb(60 60 67 / 22%);
-  --scrim: rgb(18 27 22 / 32%);
+  --separator: rgb(0 0 0 / 10%);
+  --separator-strong: rgb(0 0 0 / 20%);
+  --scrim: rgb(0 0 0 / 32%);
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -155,83 +162,89 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --color-canvas: #17201c;
-  --color-content: #1a231f;
-  --color-surface: #23302a;
-  --color-field: #2c3931;
-  --color-edge: #425048;
-  --color-edge-strong: #55645b;
+  --color-canvas: #212121;
+  --color-content: #212121;
+  --color-surface: #2f2f2f;
+  --color-field: #2f2f2f;
+  --color-edge: #3a3a3a;
+  --color-edge-strong: #4a4a4a;
 
-  --color-ink: #f5f3ea;
-  --color-secondary: #c0cbc2;
-  --color-quiet: #adb9b0;
+  --color-ink: #ececec;
+  --color-secondary: #b4b4b4;
+  --color-quiet: #8f8f8f;
 
-  --color-brand: #36594b;
-  --color-brand-hover: #446b5b;
-  --color-brand-ink: #a7d3be;
-  --color-brand-soft: #2d443a;
+  --color-brand: #ffffff;
+  --color-brand-hover: #e5e5e5;
+  --color-brand-ink: #ffffff;
+  --color-brand-soft: #2f2f2f;
+  --color-brand-contrast: #0d0d0d;
 
   --color-accent-blue: #2d414a;
   --color-accent-blue-ink: #aad0e1;
   --color-accent-teal: #243f3d;
   --color-accent-teal-ink: #88dbc1;
-  --color-accent-orange: #4c372e;
+  --color-accent-orange: #4a342a;
   --color-accent-orange-ink: #f1ba97;
-  --color-accent-violet: #2d443a;
+  --color-accent-violet: #362f45;
 
-  --color-bubble: #2e443a;
-  --color-sidebar: #202a24;
-  --color-danger: #ff9bad;
+  --color-bubble: #2f2f2f;
+  --color-sidebar: #171717;
+  --color-danger: #ff6b6b;
 
-  --glass-bar: rgb(28 38 33 / 68%);
-  --glass-chrome: rgb(52 66 58 / 62%);
-  --glass-border: rgb(80 96 86 / 58%);
-  --glass-highlight: rgb(255 255 255 / 10%);
-  --glass-shadow: 0 1px 0 rgb(255 255 255 / 7%) inset, 0 16px 40px -22px rgb(0 0 0 / 62%);
+  --glass-bar: rgb(33 33 33 / 78%);
+  --glass-chrome: rgb(47 47 47 / 70%);
+  --glass-border: rgb(58 58 58 / 65%);
+  --glass-highlight: rgb(255 255 255 / 8%);
+  --glass-shadow: 0 1px 0 rgb(255 255 255 / 6%) inset, 0 16px 40px -22px rgb(0 0 0 / 70%);
 
-  --separator: rgb(235 235 245 / 14%);
-  --separator-strong: rgb(235 235 245 / 24%);
-  --scrim: rgb(0 0 0 / 48%);
+  --separator: rgb(255 255 255 / 12%);
+  --separator-strong: rgb(255 255 255 / 22%);
+  --scrim: rgb(0 0 0 / 56%);
 }
 
-/* `mono` and `cream` are the two optional palettes carried over from the
-   original app. They only retint, so they inherit every other role. */
+/* `mono` is the high-contrast pass: true black ink, no tint anywhere. */
 :root[data-theme='mono'] {
-  --color-canvas: #f4f4f2;
-  --color-content: #fafafa;
+  --color-canvas: #ffffff;
+  --color-content: #ffffff;
   --color-surface: #ffffff;
-  --color-field: #ececeb;
-  --color-edge: #dcdcda;
-  --color-ink: #1c1c1e;
-  --color-secondary: #4b4b50;
-  --color-quiet: #6b6b70;
-  --color-brand: #2c2c2e;
-  --color-brand-hover: #1c1c1e;
-  --color-brand-ink: #2c2c2e;
-  --color-brand-soft: #e8e8e6;
-  --color-bubble: #e8e8e6;
-  --color-sidebar: #ebebe9;
-  --glass-bar: rgb(244 244 242 / 84%);
-  --glass-border: rgb(220 220 218 / 70%);
+  --color-field: #ebebeb;
+  --color-edge: #d4d4d4;
+  --color-edge-strong: #b8b8b8;
+  --color-ink: #000000;
+  --color-secondary: #3d3d3d;
+  --color-quiet: #767676;
+  --color-brand: #000000;
+  --color-brand-hover: #000000;
+  --color-brand-ink: #000000;
+  --color-brand-soft: #ebebeb;
+  --color-brand-contrast: #ffffff;
+  --color-bubble: #ebebeb;
+  --color-sidebar: #f2f2f2;
+  --glass-bar: rgb(255 255 255 / 88%);
+  --glass-border: rgb(212 212 212 / 70%);
 }
 
+/* `cream` keeps the warm paper of the original Lumen, but on the same neutral
+   scale so the components do not need a second set of overrides. */
 :root[data-theme='cream'] {
-  --color-canvas: #f6efe2;
-  --color-content: #fcf7ee;
-  --color-surface: #fffdf8;
-  --color-field: #efe6d4;
-  --color-edge: #ded2bb;
-  --color-ink: #2a2419;
-  --color-secondary: #5a5240;
-  --color-quiet: #6d6450;
-  --color-brand: #6b4d24;
-  --color-brand-hover: #553c1b;
-  --color-brand-ink: #6b4d24;
-  --color-brand-soft: #f0e3cb;
-  --color-bubble: #f0e3cb;
-  --color-sidebar: #f0e8d8;
-  --glass-bar: rgb(246 239 226 / 84%);
-  --glass-border: rgb(222 210 187 / 72%);
+  --color-canvas: #faf7f0;
+  --color-content: #faf7f0;
+  --color-surface: #fffdf9;
+  --color-field: #f1ece1;
+  --color-edge: #e2dbcb;
+  --color-edge-strong: #cdc4ae;
+  --color-ink: #221f18;
+  --color-secondary: #55503f;
+  --color-quiet: #7d765f;
+  --color-brand: #221f18;
+  --color-brand-hover: #000000;
+  --color-brand-ink: #221f18;
+  --color-brand-soft: #f1ece1;
+  --color-brand-contrast: #fffdf9;
+  --color-bubble: #f1ece1;
+  --color-sidebar: #f3eee3;
+  --glass-bar: rgb(250 247 240 / 82%);
+  --glass-border: rgb(226 219 203 / 70%);
 }
 
 /* ------------------------------------------------------------------- base */

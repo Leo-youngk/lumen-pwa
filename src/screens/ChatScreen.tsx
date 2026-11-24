@@ -142,6 +142,7 @@ export function ChatScreen({
                   compact={settings.compactMode}
                   fontSize={settings.fontSize}
                   lineHeight={settings.lineHeight}
+                  onRetry={index === messages.length - 1 && !generating ? () => void retry() : undefined}
                 />
               ),
             )}
