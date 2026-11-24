@@ -147,11 +147,13 @@ export class LumenClient {
     return response
   }
 
-  async session(): Promise<boolean> {
-    const response = await fetch(this.url('/api/auth'), { credentials: 'same-origin' })
-    if (!response.ok) return false
+  async session(signal: AbortSignal): Promise<boolean> {
+    const response = await fetch(this.url('/api/auth'), { credentials: 'same-origin', signal })
+    if (response.status === 401) return false
+    if (!response.ok) throw new ApiError('暂时无法确认登录状态。', response.status)
     const data = (await response.json()) as { authenticated?: boolean }
-    return Boolean(data.authenticated)
+    if (typeof data?.authenticated !== 'boolean') throw new Error('登录服务返回了无效响应。')
+    return data.authenticated
   }
 
   async signIn(token: string): Promise<void> {

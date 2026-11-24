@@ -34,7 +34,7 @@ import {
   type UsageReport,
 } from '@/lib/store'
 
-type Status = 'checking' | 'authenticated' | 'unauthenticated'
+type Status = 'checking' | 'authenticated' | 'unauthenticated' | 'unavailable'
 
 export type ModelStatus =
   | { state: 'loading' }
@@ -43,6 +43,7 @@ export type ModelStatus =
 
 interface LumenContextValue {
   status: Status
+  retrySession: () => void
   settings: Settings
   updateSettings: (patch: Partial<Settings>) => void
   connectProvider: (apiBaseUrl: string, apiKey: string) => Promise<void>
@@ -128,6 +129,7 @@ function modelContent(message: Message): string {
 
 export function LumenProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('checking')
+  const [sessionAttempt, setSessionAttempt] = useState(0)
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations)
   const [historyReady, setHistoryReady] = useState(false)
@@ -173,18 +175,23 @@ export function LumenProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 12_000)
     client
-      .session()
+      .session(controller.signal)
       .then(authenticated => {
         if (!cancelled) setStatus(authenticated ? 'authenticated' : 'unauthenticated')
       })
       .catch(() => {
-        if (!cancelled) setStatus('unauthenticated')
+        if (!cancelled) setStatus('unavailable')
       })
+      .finally(() => window.clearTimeout(timeout))
     return () => {
       cancelled = true
+      window.clearTimeout(timeout)
+      controller.abort()
     }
-  }, [client])
+  }, [client, sessionAttempt])
 
   useEffect(() => {
     if (status !== 'authenticated') return
@@ -568,6 +575,10 @@ export function LumenProvider({ children }: { children: ReactNode }) {
 
   const value: LumenContextValue = {
     status: historyReady ? status : 'checking',
+    retrySession: useCallback(() => {
+      setStatus('checking')
+      setSessionAttempt(attempt => attempt + 1)
+    }, []),
     settings,
     updateSettings,
     connectProvider,

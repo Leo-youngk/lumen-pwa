@@ -2,10 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Composer } from '@/components/Composer'
 import { Icon } from '@/components/Icon'
 import { AssistantBubble, UserBubble } from '@/components/Message'
-import { GlassButton, NavigationBar } from '@/components/NavigationBar'
+import { NavIconButton, NavigationBar } from '@/components/NavigationBar'
 import { useLumen } from '@/state/LumenContext'
 import { cn } from '@/lib/cn'
-import { ModelPill } from './HomeScreen'
+import { useIsTouch } from '@/lib/viewport'
 
 function answerContainer(node: Node | null) {
   const element = node instanceof Element ? node : node?.parentElement
@@ -13,21 +13,27 @@ function answerContainer(node: Node | null) {
 }
 
 export interface ChatScreenProps {
+  homeKey: number
   onOpenDrawer: () => void
   onOpenOptions: () => void
   onOpenModels: () => void
   onOpenScope: () => void
+  onNew: () => void
   onUpload: (file: File) => void
   uploading: boolean
+  onSent: () => void
 }
 
 export function ChatScreen({
+  homeKey,
   onOpenDrawer,
   onOpenOptions,
   onOpenModels,
   onOpenScope,
+  onNew,
   onUpload,
   uploading,
+  onSent,
 }: ChatScreenProps) {
   const {
     active,
@@ -45,17 +51,33 @@ export function ChatScreen({
     models,
   } = useLumen()
 
+  const touch = useIsTouch()
+  const conversationKey = active?.id ?? homeKey
+  const [draftScope, setDraftScope] = useState(conversationKey)
+  const [homeDraft, setHomeDraft] = useState('')
+  const [homeDraftKey, setHomeDraftKey] = useState(homeKey)
   const [draft, setDraft] = useState('')
   const [selection, setSelection] = useState('')
   const [quote, setQuote] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
   const feed = useRef<HTMLDivElement>(null)
+  const transcript = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [belowFold, setBelowFold] = useState(false)
 
   const messages = active?.messages ?? []
-  const last = messages.at(-1)
   const generating = streamingId === active?.id
+  if (draftScope !== conversationKey) {
+    setDraftScope(conversationKey)
+    setDraft('')
+    setSelection('')
+    setQuote('')
+    setBelowFold(false)
+  }
+  if (homeDraftKey !== homeKey) {
+    setHomeDraftKey(homeKey)
+    setHomeDraft('')
+  }
   const progressLabel = readingProgress?.stage === 'direct'
     ? '正在发送所选范围内的全部正文…'
     : readingProgress?.stage === 'read'
@@ -64,12 +86,33 @@ export function ChatScreen({
         ? `正在汇总 ${readingProgress.done}/${readingProgress.total} 批`
         : ''
 
-  // Follow new content only while the reader is already at the bottom. Once
-  // they scroll up to re-read, the view must stay put.
+  // The keyboard, draft, and streamed Markdown can all resize the feed.
   useLayoutEffect(() => {
     const node = feed.current
-    if (node && stick.current) node.scrollTop = node.scrollHeight
-  }, [messages.length, last?.content, last?.reasoning, error, progressLabel])
+    const content = transcript.current
+    if (!node || !content) return
+    const followLatest = () => {
+      if (!stick.current) return
+      const bottom = node.scrollHeight - node.clientHeight
+      if (Math.abs(node.scrollTop - bottom) > 1) node.scrollTop = bottom
+    }
+    if (node.dataset.conversation !== String(conversationKey)) {
+      node.dataset.conversation = String(conversationKey)
+      stick.current = true
+    }
+    followLatest()
+    let frame = 0
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(followLatest)
+    })
+    observer.observe(node)
+    observer.observe(content)
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+    }
+  }, [conversationKey])
 
   useEffect(() => {
     let clearTimer: number | undefined
@@ -91,7 +134,7 @@ export function ChatScreen({
       document.removeEventListener('selectionchange', onSelectionChange)
       window.clearTimeout(clearTimer)
     }
-  }, [])
+  }, [conversationKey])
 
   const onScroll = useCallback(() => {
     const node = feed.current
@@ -105,30 +148,40 @@ export function ChatScreen({
     const node = feed.current
     if (!node) return
     stick.current = true
-    node.scrollTo({
-      top: node.scrollHeight,
-      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-    })
+    node.scrollTop = node.scrollHeight
   }
 
-  if (!active) return null
-
   return (
-    <div className="screen-enter relative flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <NavigationBar
-        leading={<GlassButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} badge />}
-        title={active.title}
-        trailing={<GlassButton icon="more" label="更多" onClick={onOpenOptions} />}
+        leading={<NavIconButton icon="menu" label="打开对话列表" onClick={() => {
+          input.current?.blur()
+          onOpenDrawer()
+        }} />}
+        center={
+          <button
+            type="button"
+            onClick={onOpenModels}
+            aria-haspopup="dialog"
+            aria-label="选择模型"
+            className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full px-3 text-[14px] font-medium text-secondary active:bg-field"
+          >
+            <span className="min-w-0 truncate">{models.length ? modelLabel(active?.model || model) : '模型'}</span>
+            <Icon name="down" size={12} className="shrink-0" />
+          </button>
+        }
+        trailing={active
+          ? <NavIconButton icon="more" label="更多" onClick={onOpenOptions} />
+          : <NavIconButton icon="compose" label="新对话" onClick={onNew} />}
       />
 
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      {active ? <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={feed}
           onScroll={onScroll}
           className="scroll-pane min-h-0 flex-1 overscroll-contain"
-          style={{ paddingTop: 64, paddingBottom: 'calc(var(--composer-height, 96px) + 12px)' }}
         >
-          <div className={cn('mx-auto w-full max-w-[680px] pt-2', settings.compactMode ? 'pb-2' : 'pb-4')}>
+          <div ref={transcript} className={cn('mx-auto w-full max-w-[680px] pt-2', settings.compactMode ? 'pb-2' : 'pb-4')}>
             {messages.map((message, index) =>
               message.role === 'user' ? (
                 <UserBubble key={message.id} message={message} />
@@ -140,7 +193,7 @@ export function ChatScreen({
                   compact={settings.compactMode}
                   fontSize={settings.fontSize}
                   lineHeight={settings.lineHeight}
-                  onRetry={index === messages.length - 1 && !generating ? () => void retry() : undefined}
+                  onRetry={index === messages.length - 1 && !streaming ? retry : undefined}
                 />
               ),
             )}
@@ -188,21 +241,30 @@ export function ChatScreen({
             <Icon name="down" size={17} strokeWidth={2.2} />
           </button>
         ) : null}
-      </div>
+      </div> : (
+        <div className="grid min-h-0 flex-1 place-items-center overflow-hidden px-4">
+          <h1 className="text-center text-[24px] leading-tight font-medium tracking-[-0.01em] text-ink">
+            有什么可以帮你？
+          </h1>
+        </div>
+      )}
 
       <Composer
         inputRef={input}
-        value={draft}
-        onChange={setDraft}
+        value={active ? draft : homeDraft}
+        onChange={active ? setDraft : setHomeDraft}
         onSubmit={text => {
-          setDraft('')
+          if (active) setDraft('')
+          else setHomeDraft('')
           setQuote('')
+          stick.current = true
+          setBelowFold(false)
           void send(text, quote || undefined)
+          if (!active) onSent()
         }}
         onStop={stop}
         streaming={generating}
         disabled={uploading || (streaming && !generating)}
-        className="absolute inset-x-0 bottom-0 z-10 mx-auto w-full max-w-[680px]"
         leading={selection ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-start px-4 pb-2">
             <button
@@ -212,7 +274,7 @@ export function ChatScreen({
                 setQuote(selection)
                 setSelection('')
                 window.getSelection()?.removeAllRanges()
-                input.current?.focus()
+                input.current?.focus({ preventScroll: true })
               }}
               className="pointer-events-auto inline-flex min-h-10 items-center gap-1.5 rounded-full border border-(--separator) bg-surface px-3 text-[14px] font-medium text-brand-ink shadow-lg active:scale-95"
             >
@@ -221,9 +283,10 @@ export function ChatScreen({
             </button>
           </div>
         ) : undefined}
-        context={active.book || quote ? (
+        context={active?.book || quote || uploading ? (
           <div className="min-w-0 space-y-1 pb-0.5">
-            {active.book ? (
+            {uploading ? <p role="status" className="px-2 text-[13px] text-quiet">正在转换 EPUB…</p> : null}
+            {active?.book ? (
               <button
                 type="button"
                 onClick={onOpenScope}
@@ -255,14 +318,8 @@ export function ChatScreen({
           </div>
         ) : undefined}
         onAttach={onUpload}
-        enterToSend={settings.enterToSend}
-        placeholder={uploading ? '正在转换 EPUB…' : generating ? '正在生成回答…' : active.book && !messages.length ? '向这本书提问…' : '继续追问…'}
-        trailing={
-          <ModelPill
-            label={models.length ? modelLabel(active.model || model) : '默认模型'}
-            onClick={onOpenModels}
-          />
-        }
+        enterToSend={!touch && settings.enterToSend}
+        placeholder={active?.book && !messages.length ? '向这本书提问…' : active ? '继续追问…' : '问点什么…'}
       />
     </div>
   )

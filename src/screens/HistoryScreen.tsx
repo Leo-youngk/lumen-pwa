@@ -15,7 +15,7 @@ export function HistoryScreen({ onBack, onOpen, onNew }: {
   const groups = useMemo(() => groupByDay(sortConversations(conversations)), [conversations])
 
   return (
-    <div className="screen-enter relative h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
       <NavigationBar
         title="对话"
         onBack={onBack}
@@ -30,7 +30,7 @@ export function HistoryScreen({ onBack, onOpen, onNew }: {
         }
       />
 
-      <div className="scroll-pane h-full" style={{ paddingTop: 64 }}>
+      <div className="scroll-pane min-h-0 flex-1 overscroll-contain">
         {groups.length ? (
           <div className="mx-auto max-w-[680px] px-4 py-4">
             {groups.map(group => (

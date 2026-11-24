@@ -1,66 +1,39 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 import { Icon, type IconName } from './Icon'
 
-/**
- * Floating navigation controls.
- *
- * iOS puts the bar's controls *on* the content as separate circular glass
- * chips rather than a full-width strip: the page keeps its top edge, and the
- * buttons read as objects lying on top of it. A full-width bar forces an opaque
- * band and a seam wherever the content behind differs in brightness.
- *
- * The centre slot is intentionally empty by default. The reference app puts a
- * segmented control there, but a two-tab switch only makes sense when there are
- * two destinations; this app has one, so the slot stays free for a title.
- */
 export interface NavigationBarProps {
   title?: string
   onBack?: () => void
   leading?: ReactNode
+  center?: ReactNode
   trailing?: ReactNode
-  /** Show the title as a centre chip. Off on screens that carry a large title. */
-  showTitle?: boolean
-  className?: string
 }
 
-export function NavigationBar({ title, onBack, leading, trailing, showTitle = false, className }: NavigationBarProps) {
+export function NavigationBar({ title, onBack, leading, center, trailing }: NavigationBarProps) {
   return (
-    <header
-      className={cn(
-        'pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 px-3 pt-2',
-        className,
-      )}
-    >
-      <div className="pointer-events-auto flex shrink-0 items-center gap-2">
-        {leading ?? (onBack ? <GlassButton icon="left" label="返回" onClick={onBack} /> : null)}
+    <header className="grid shrink-0 grid-cols-[3.5rem_minmax(0,1fr)_3.5rem] items-center gap-2 px-3 py-1">
+      <div className="flex items-center">
+        {leading ?? (onBack ? <NavIconButton icon="left" label="返回" onClick={onBack} /> : null)}
       </div>
 
-      <div className="pointer-events-none flex min-w-0 flex-1 justify-center pt-1.5">
-        {showTitle && title ? (
-          <span className="pointer-events-auto max-w-full truncate rounded-full px-3 text-[15px] leading-8 font-semibold">
-            {title}
-          </span>
-        ) : null}
+      <div className="flex min-w-0 justify-center">
+        {center ?? (title ? <h1 className="truncate text-[16px] font-semibold">{title}</h1> : null)}
       </div>
 
-      <div className="pointer-events-auto flex shrink-0 items-center gap-2">{trailing}</div>
+      <div className="flex items-center justify-end">{trailing}</div>
     </header>
   )
 }
 
-/** A circular glass chip. 44pt hit area, 40pt visual. */
-export function GlassButton({
+export function NavIconButton({
   icon,
   label,
   onClick,
-  badge,
 }: {
   icon: IconName
   label: string
   onClick?: () => void
-  /** Small accent dot on the top-right, as on the reference's menu button. */
-  badge?: boolean
 }) {
   return (
     <button
@@ -69,64 +42,12 @@ export function GlassButton({
       aria-label={label}
       title={label}
       className={cn(
-        'glass-chrome relative grid size-10 place-items-center rounded-full text-ink',
-        'transition-[transform,background-color] duration-150 ease-(--ease-tap) active:scale-95',
+        'grid size-11 place-items-center rounded-full border border-edge text-ink',
+        'transition-[transform,background-color] duration-150 ease-(--ease-tap) active:scale-95 active:bg-field',
       )}
     >
       <Icon name={icon} size={19} strokeWidth={1.9} />
-      {badge ? (
-        <span className="absolute top-[7px] right-[7px] size-[7px] rounded-full bg-(--color-action) ring-2 ring-(--color-surface)" />
-      ) : null}
     </button>
-  )
-}
-
-/**
- * Large title that collapses into the centre chip on scroll.
- *
- * `scrollRef` must point at the element that actually scrolls the page; the
- * hook watches it with a passive listener rather than an IntersectionObserver
- * because the threshold has to line up with the bar height, not with a
- * fraction of the title's own height.
- */
-export function CollapsingLargeTitle({
-  title,
-  scrollRef,
-  onChange,
-}: {
-  title: ReactNode
-  scrollRef: React.RefObject<HTMLElement | null>
-  onChange: (collapsed: boolean) => void
-}) {
-  const sentinel = useRef<HTMLDivElement>(null)
-  const collapsed = useRef(false)
-
-  useEffect(() => {
-    const scroller = scrollRef.current
-    const node = sentinel.current
-    if (!scroller || !node) return
-
-    const check = () => {
-      const next = node.getBoundingClientRect().bottom <= 56
-      if (next !== collapsed.current) {
-        collapsed.current = next
-        onChange(next)
-      }
-    }
-
-    check()
-    scroller.addEventListener('scroll', check, { passive: true })
-    window.addEventListener('resize', check)
-    return () => {
-      scroller.removeEventListener('scroll', check)
-      window.removeEventListener('resize', check)
-    }
-  }, [onChange, scrollRef])
-
-  return (
-    <div ref={sentinel}>
-      <h1 className="px-1 pt-1 pb-4 text-[32px] leading-[1.1] font-bold tracking-[-0.02em]">{title}</h1>
-    </div>
   )
 }
 

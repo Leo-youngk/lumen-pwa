@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
 
 /**
- * Fit the whole app to the visible part of the screen. On iOS the keyboard
- * shrinks the visual viewport without necessarily resizing the layout viewport.
+ * Only override the normal CSS viewport while an on-screen keyboard is open.
+ * In that state Safari can pan as well as shrink the visible area.
  */
 export function useViewport(): void {
   useLayoutEffect(() => {
@@ -11,14 +11,33 @@ export function useViewport(): void {
     if (!viewport) return
 
     let frame = 0
+    let keyboard = false
+    let height = 0
+    let top = 0
     const measure = () => {
       if (Math.abs(viewport.scale - 1) > 0.01) return
-      const height = Math.round(viewport.height)
-      const keyboard = window.innerHeight - height > 80
-      const top = keyboard ? Math.max(0, Math.round(viewport.offsetTop)) : 0
-      root.style.setProperty('--app-height', `${height}px`)
-      root.style.setProperty('--app-top', `${top}px`)
-      root.toggleAttribute('data-keyboard', keyboard)
+      const focused = document.activeElement
+      const editing = focused instanceof HTMLTextAreaElement ||
+        focused instanceof HTMLInputElement ||
+        (focused instanceof HTMLElement && focused.isContentEditable)
+      const visibleHeight = Math.round(viewport.height)
+      const nextKeyboard = (editing || keyboard) && visibleHeight > 0 && window.innerHeight - visibleHeight > 80
+      if (nextKeyboard !== keyboard) {
+        keyboard = nextKeyboard
+        root.toggleAttribute('data-keyboard', keyboard)
+      }
+      const nextHeight = keyboard ? visibleHeight : 0
+      const nextTop = keyboard ? Math.max(0, Math.round(viewport.offsetTop)) : 0
+      if (nextHeight !== height) {
+        height = nextHeight
+        if (height) root.style.setProperty('--app-height', `${height}px`)
+        else root.style.removeProperty('--app-height')
+      }
+      if (nextTop !== top) {
+        top = nextTop
+        if (top) root.style.setProperty('--app-top', `${top}px`)
+        else root.style.removeProperty('--app-top')
+      }
     }
     const schedule = () => {
       cancelAnimationFrame(frame)
@@ -29,11 +48,17 @@ export function useViewport(): void {
     viewport.addEventListener('resize', schedule)
     viewport.addEventListener('scroll', schedule)
     window.addEventListener('resize', schedule)
+    window.addEventListener('pageshow', schedule)
+    document.addEventListener('focusin', schedule)
+    document.addEventListener('focusout', schedule)
     return () => {
       cancelAnimationFrame(frame)
       viewport.removeEventListener('resize', schedule)
       viewport.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', schedule)
+      window.removeEventListener('pageshow', schedule)
+      document.removeEventListener('focusin', schedule)
+      document.removeEventListener('focusout', schedule)
       root.style.removeProperty('--app-height')
       root.style.removeProperty('--app-top')
       root.removeAttribute('data-keyboard')
@@ -53,10 +78,7 @@ export function useTheme(theme: 'light' | 'dark' | 'mono' | 'cream'): void {
     const root = document.documentElement
     root.dataset.theme = theme
     const surface = getComputedStyle(root).getPropertyValue('--color-content').trim()
-    if (!surface) return
-    document
-      .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
-      .forEach(meta => meta.setAttribute('content', surface))
+    if (surface) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', surface)
   }, [theme])
 }
 

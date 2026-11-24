@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState } from 'react'
-import { BarButton, CollapsingLargeTitle, NavigationBar } from '@/components/NavigationBar'
+import { useRef, useState } from 'react'
+import { BarButton, NavigationBar } from '@/components/NavigationBar'
 import { List, Row } from '@/components/List'
 import { Sheet } from '@/components/Sheet'
 import { useLumen } from '@/state/LumenContext'
@@ -24,17 +24,13 @@ export function SettingsScreen({
     useLumen()
   const [themeSheet, setThemeSheet] = useState(false)
   const [advanced, setAdvanced] = useState(false)
-  const [collapsed, setCollapsed] = useState(false)
-  const scroll = useRef<HTMLDivElement>(null)
-  const onCollapse = useCallback((value: boolean) => setCollapsed(value), [])
 
   const themeLabel = THEMES.find(item => item.value === settings.theme)?.label ?? '浅色'
 
   return (
-    <div className="screen-enter relative h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
       <NavigationBar
         title="设置"
-        showTitle={collapsed}
         onBack={onBack}
         trailing={
           <BarButton bold onClick={onBack}>
@@ -43,14 +39,8 @@ export function SettingsScreen({
         }
       />
 
-      <div
-        ref={scroll}
-        className="scroll-pane h-full"
-        style={{ paddingTop: 64 }}
-      >
+      <div className="scroll-pane min-h-0 flex-1 overscroll-contain">
         <div className="mx-auto w-full max-w-[720px] px-1 pt-2">
-          <CollapsingLargeTitle title="设置" scrollRef={scroll} onChange={onCollapse} />
-
           <div className="px-4">
             <List header="外观">
               <Row icon="sliders" label="主题" value={themeLabel} onClick={() => setThemeSheet(true)} />
@@ -107,8 +97,8 @@ export function SettingsScreen({
 
             <List header="输入">
               <ToggleRow
-                label="回车发送"
-                detail="关闭后用 ⌘+回车 发送"
+                label="电脑端回车发送"
+                detail="支持 Shift+回车换行，关闭后用 ⌘/Ctrl+回车发送"
                 checked={settings.enterToSend}
                 onChange={value => updateSettings({ enterToSend: value })}
               />

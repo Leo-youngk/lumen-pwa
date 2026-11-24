@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { cn } from '@/lib/cn'
 import { Icon, IconButton } from './Icon'
 
@@ -11,37 +11,20 @@ export interface ComposerProps {
   disabled?: boolean
   enterToSend?: boolean
   placeholder?: string
-  /** Rendered above the field: scope pill, status text, upload errors. */
   leading?: React.ReactNode
   context?: React.ReactNode
-  inputRef?: RefObject<HTMLTextAreaElement | null>
-  /** Slot left of the field's action row, e.g. an attach button. */
-  accessory?: React.ReactNode
-  /** Trailing control left of the send button, e.g. the model pill. */
-  trailing?: React.ReactNode
-  onAttach?: (file: File) => void
-  attachLabel?: string
-  className?: string
-  /**
-   * Docked composers pad for the keyboard and sit on the panel edge; a floating
-   * one is centred mid-screen on the home screen and needs neither.
-   */
-  docked?: boolean
+  inputRef: RefObject<HTMLTextAreaElement | null>
+  onAttach: (file: File) => void
 }
 
-/**
- * The message composer.
- *
- * iOS conventions this follows:
- *
- * - It is a rounded field with an action row inside it, not a bordered input
- *   with a send button hanging off the right edge.
- * - The textarea grows to a ceiling (112 px ≈ 4 lines) and then scrolls, so
- *   the dock never swallows the conversation.
- * - Enter sends, Shift+Enter breaks the line, and IME composition is respected
- *   so that confirming a Chinese candidate does not fire a send.
- * - The app viewport keeps the dock above the keyboard.
- */
+function fitField(node: HTMLTextAreaElement) {
+  const scroll = node.scrollTop
+  node.style.height = 'auto'
+  // scrollHeight includes padding but excludes the 1px border on each side.
+  node.style.height = `${node.scrollHeight + 2}px`
+  node.scrollTop = scroll
+}
+
 export function Composer({
   value,
   onChange,
@@ -53,69 +36,60 @@ export function Composer({
   placeholder = '问 Lumen…',
   leading,
   context,
-  inputRef,
-  accessory,
-  trailing,
+  inputRef: field,
   onAttach,
-  attachLabel = '上传书籍',
-  className,
-  docked = true,
 }: ComposerProps) {
-  const localField = useRef<HTMLTextAreaElement>(null)
-  const field = inputRef ?? localField
   const upload = useRef<HTMLInputElement>(null)
-  const root = useRef<HTMLDivElement>(null)
-
-  // Publish the dock's height so the transcript can pad for it and still scroll
-  // *under* the bar. Without content sliding beneath, the glass has nothing to
-  // refract and the bar reads as a plain white strip.
-  useEffect(() => {
-    const element = root.current
-    if (!element) return
-    const apply = () => {
-      document.documentElement.style.setProperty('--composer-height', `${element.offsetHeight}px`)
-    }
-    apply()
-    const observer = new ResizeObserver(apply)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [])
+  const isComposing = useRef(false)
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
   const ready = value.trim().length > 0 && !disabled && !streaming
 
-  // Size the textarea to its content, capped so it scrolls instead of growing.
   useLayoutEffect(() => {
     const node = field.current
-    if (!node) return
-    node.style.height = 'auto'
-    node.style.height = `${Math.min(112, Math.max(24, node.scrollHeight))}px`
+    if (node && !CSS.supports('field-sizing: content')) fitField(node)
   }, [field, value])
 
-  const submit = useCallback(() => {
-    if (!ready) return
+  useLayoutEffect(() => {
+    const node = field.current
+    const form = node?.form
+    if (!node || !form || CSS.supports('field-sizing: content')) return
+    let width: number | undefined
+    let frame = 0
+    const observer = new ResizeObserver(([entry]) => {
+      const next = entry?.contentRect.width
+      if (!next || next === width) return
+      width = next
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => fitField(node))
+    })
+    observer.observe(form)
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+    }
+  }, [field])
+
+  function submit() {
+    if (!ready || isComposing.current) return
     onSubmit(value.trim())
-  }, [onSubmit, ready, value])
+  }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey) return
-    // `isComposing` guards IME candidate selection.
-    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+    if (isComposing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
     if (!enterToSend && !event.metaKey && !event.ctrlKey) return
     event.preventDefault()
     submit()
   }
 
   function pickFile(file: File | undefined) {
-    if (!file || !onAttach || disabled || streaming) return
+    if (!file || disabled || streaming) return
     onAttach(file)
   }
 
   return (
-    <div
-      ref={root}
-      className={cn('relative shrink-0 px-3', docked && 'pb-2.5', className)}
-    >
+    <div className="composer-dock relative mx-auto w-full max-w-[680px] shrink-0">
       {leading}
       {context ? <div className="mb-2 px-1">{context}</div> : null}
 
@@ -125,13 +99,13 @@ export function Composer({
           submit()
         }}
         onDragEnter={event => {
-          if (!onAttach || !Array.from(event.dataTransfer.types).includes('Files')) return
+          if (disabled || streaming || !Array.from(event.dataTransfer.types).includes('Files')) return
           event.preventDefault()
           dragDepth.current += 1
           setDragging(true)
         }}
         onDragOver={event => {
-          if (!onAttach || !Array.from(event.dataTransfer.types).includes('Files')) return
+          if (!Array.from(event.dataTransfer.types).includes('Files')) return
           event.preventDefault()
         }}
         onDragLeave={() => {
@@ -139,49 +113,37 @@ export function Composer({
           if (!dragDepth.current) setDragging(false)
         }}
         onDrop={event => {
-          if (!onAttach || !event.dataTransfer.files.length) return
+          if (!event.dataTransfer.files.length) return
           event.preventDefault()
           dragDepth.current = 0
           setDragging(false)
           pickFile(event.dataTransfer.files[0])
         }}
-        className={cn(
-          'relative flex items-end gap-2 rounded-[28px] px-2.5 py-2',
-          'bg-surface',
-          'field-card',
-          'transition-[box-shadow] duration-200 ease-(--ease-enter)',
-          dragging && 'ring-2 ring-brand/40',
-        )}
+        className="relative flex items-end gap-2"
       >
         {dragging ? (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-[28px] bg-brand-soft/80 text-[15px] font-medium text-brand-ink">
+          <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-brand-soft/90 text-[15px] font-medium text-brand-ink">
             松开以上传 EPUB
           </div>
         ) : null}
 
-        {onAttach ? (
-          <>
-            <input
-              ref={upload}
-              type="file"
-              accept=".epub,application/epub+zip"
-              hidden
-              onChange={event => {
-                pickFile(event.target.files?.[0])
-                event.target.value = ''
-              }}
-            />
-            <IconButton
-              icon="plus"
-              label={attachLabel}
-              onClick={() => upload.current?.click()}
-              disabled={disabled || streaming}
-              className="ml-0 size-9 text-secondary"
-            />
-          </>
-        ) : (
-          accessory
-        )}
+        <input
+          ref={upload}
+          type="file"
+          accept=".epub,application/epub+zip"
+          hidden
+          onChange={event => {
+            pickFile(event.target.files?.[0])
+            event.target.value = ''
+          }}
+        />
+        <IconButton
+          icon="plus"
+          label="上传书籍"
+          onClick={() => upload.current?.click()}
+          disabled={disabled || streaming}
+          className="size-11 shrink-0 border border-edge bg-transparent text-secondary"
+        />
 
         <textarea
           ref={field}
@@ -191,39 +153,34 @@ export function Composer({
           placeholder={placeholder}
           onChange={event => onChange(event.target.value)}
           onKeyDown={onKeyDown}
+          onCompositionStart={() => { isComposing.current = true }}
+          onCompositionEnd={() => { isComposing.current = false }}
           autoComplete="off"
           enterKeyHint={enterToSend ? 'send' : 'enter'}
-          className={cn(
-            'max-h-28 min-h-[24px] flex-1 resize-none bg-transparent py-1.5 text-[16px] leading-[1.4]',
-            'outline-none placeholder:text-quiet',
-          )}
+          className="composer-field min-w-0 flex-1 resize-none overscroll-contain rounded-[17px] border border-edge bg-field px-3 py-2.5 text-[16px] leading-[22px] placeholder:text-quiet"
         />
 
-        <div className="flex shrink-0 items-center gap-1">
-          {trailing}
-          <button
-            type={streaming ? 'button' : 'submit'}
-            onClick={streaming ? onStop : undefined}
-            disabled={!streaming && !ready}
-            aria-label={streaming ? '停止生成' : '发送'}
-            className={cn(
-              'grid size-9 place-items-center rounded-full',
-              'transition-[transform,background-color,opacity] duration-150 ease-(--ease-tap) active:scale-90',
-              streaming
-                ? 'bg-ink text-canvas'
-                : ready
-                  ? 'bg-(--color-action) text-(--color-action-ink)'
-                  : 'bg-(--separator-strong) text-quiet',
-            )}
-          >
-            <Icon
-              name={streaming ? 'stop' : 'send'}
-              size={streaming ? 16 : 19}
-              strokeWidth={streaming ? 0 : 2.2}
-              className={streaming ? 'fill-current' : undefined}
-            />
-          </button>
-        </div>
+        <button
+          type={streaming ? 'button' : 'submit'}
+          onMouseDown={event => {
+            if (document.activeElement === field.current) event.preventDefault()
+          }}
+          onClick={streaming ? onStop : undefined}
+          disabled={!streaming && !ready}
+          aria-label={streaming ? '停止生成' : '发送'}
+          className={cn(
+            'grid size-11 shrink-0 place-items-center rounded-full',
+            'transition-[transform,background-color] duration-150 ease-(--ease-tap) active:scale-95',
+            ready || streaming ? 'bg-brand text-brand-contrast' : 'bg-field text-quiet',
+          )}
+        >
+          <Icon
+            name={streaming ? 'stop' : 'send'}
+            size={streaming ? 16 : 19}
+            strokeWidth={streaming ? 0 : 2.2}
+            className={streaming ? 'fill-current' : undefined}
+          />
+        </button>
       </form>
     </div>
   )

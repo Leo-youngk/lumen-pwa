@@ -83,10 +83,11 @@ export function SideDrawer({
   return (
     <div
       className={cn(
-        'fixed inset-0 z-50 lg:hidden',
+        'absolute inset-0 z-50 lg:hidden',
         open ? 'pointer-events-auto' : 'pointer-events-none',
       )}
       aria-hidden={!open}
+      inert={!open}
     >
       <div
         onClick={onClose}
@@ -103,13 +104,20 @@ export function SideDrawer({
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
+        onTouchCancel={() => {
+          drag.current = null
+          if (panel.current) {
+            panel.current.style.transition = ''
+            panel.current.style.transform = ''
+          }
+        }}
         className={cn(
           'absolute inset-y-0 left-0 flex w-[min(84vw,320px)] flex-col bg-sidebar',
-          'border-r border-(--separator) shadow-[0_0_40px_rgb(0_0_0/18%)]',
+          'border-r border-(--separator)',
           'transition-transform duration-250 ease-(--ease-enter)',
-          open ? 'translate-x-0' : '-translate-x-full',
+          open ? 'translate-x-0 shadow-[0_0_40px_rgb(0_0_0/18%)]' : '-translate-x-full',
         )}
-        style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }}
+        style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--app-safe-bottom)' }}
       >
         <div className="flex items-center justify-between px-3 pt-3 pb-2">
           <span className="text-[17px] font-semibold tracking-tight">对话</span>

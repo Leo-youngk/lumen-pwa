@@ -1,7 +1,6 @@
 import { Activity, useCallback, useRef, useState } from 'react'
 import { ChatScreen } from '@/screens/ChatScreen'
 import { HistoryScreen } from '@/screens/HistoryScreen'
-import { HomeScreen } from '@/screens/HomeScreen'
 import { ModelSheet, ScopeSheet } from '@/screens/ModelSheet'
 import { SettingsScreen } from '@/screens/SettingsScreen'
 import { SignInScreen } from '@/screens/SignInScreen'
@@ -20,7 +19,7 @@ type Route = 'home' | 'chat' | 'history' | 'settings'
 
 export function App() {
   const {
-    status, settings, active, activeId, streaming, openConversation, startConversation,
+    status, retrySession, settings, active, activeId, streaming, openConversation, startConversation,
     updateConversation, togglePin, clearAll, deleteConversation, conversations,
   } = useLumen()
   const [route, setRoute] = useState<Route>('home')
@@ -92,9 +91,27 @@ export function App() {
   if (status === 'checking') {
     return (
       <div className="app-frame grid place-items-center">
-        <div className="flex items-center gap-2 text-[14px] text-quiet">
+        <div role="status" className="flex items-center gap-2 text-[14px] text-quiet">
           <span className="size-3.5 animate-spin rounded-full border-2 border-(--separator-strong) border-t-brand" />
           正在确认会话
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'unavailable') {
+    return (
+      <div className="app-frame grid place-items-center px-6 text-center">
+        <div>
+          <h1 className="text-[20px] font-semibold">暂时无法连接 Lumen</h1>
+          <p className="mt-2 text-[15px] text-secondary">请检查网络连接，或稍后重试。</p>
+          <button
+            type="button"
+            onClick={retrySession}
+            className="mt-5 min-h-11 rounded-full bg-brand px-5 text-[15px] text-brand-contrast active:opacity-80"
+          >
+            重新连接
+          </button>
         </div>
       </div>
     )
@@ -116,46 +133,19 @@ export function App() {
         <Sidebar route={route} onNavigate={navigate} onOpen={openChat} onNew={newConversation} />
 
         <main className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-          <Activity mode={route === 'home' ? 'visible' : 'hidden'}>
-            <HomeScreen
-              key={homeKey}
+          <Activity mode={route === 'home' || route === 'chat' ? 'visible' : 'hidden'}>
+            <ChatScreen
+              homeKey={homeKey}
               onOpenDrawer={() => setDrawer(true)}
+              onOpenOptions={() => setOptions(true)}
               onOpenModels={() => setModels(true)}
+              onOpenScope={() => setScope(true)}
               onNew={newConversation}
-              onUpload={file => void upload(file, null)}
+              onUpload={file => void upload(file, activeId)}
               uploading={uploading}
               onSent={() => navigate('chat')}
             />
           </Activity>
-
-          {activeId ? (
-            <Activity mode={route === 'chat' ? 'visible' : 'hidden'}>
-              <ChatScreen
-                key={activeId}
-                onOpenDrawer={() => setDrawer(true)}
-                onOpenOptions={() => setOptions(true)}
-                onOpenModels={() => setModels(true)}
-                onOpenScope={() => setScope(true)}
-                onUpload={file => void upload(file, activeId)}
-                uploading={uploading}
-              />
-            </Activity>
-          ) : null}
-
-          {route === 'chat' && !activeId ? (
-            <div className="grid h-full place-items-center px-8 text-center">
-              <div>
-                <p className="text-[16px] font-medium">还没有选择对话</p>
-                <button
-                  type="button"
-                  onClick={() => navigate('home')}
-                  className="mt-3 rounded-full bg-brand px-4 py-2 text-[15px] text-brand-contrast active:opacity-80"
-                >
-                  回到首页
-                </button>
-              </div>
-            </div>
-          ) : null}
 
           {route === 'history' ? (
             <HistoryScreen onBack={() => navigate('home')} onNew={newConversation} onOpen={openChat} />
@@ -242,7 +232,7 @@ export function App() {
       </Sheet>
 
       {uploadError ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-24 z-40 flex justify-center px-4">
+        <div className="pointer-events-none absolute inset-x-0 bottom-24 z-40 flex justify-center px-4">
           <p
             role="alert"
             className="pointer-events-auto max-w-[420px] rounded-[12px] bg-accent-orange px-3.5 py-2.5 text-[13.5px] leading-snug text-accent-orange-ink shadow-lg"
@@ -279,7 +269,7 @@ function Sidebar({
       aria-label="对话导航"
       className="hidden w-[268px] shrink-0 flex-col border-r border-(--separator) bg-sidebar lg:flex"
     >
-      <div className="flex items-center gap-2 px-4 pt-4 pb-3" style={{ paddingTop: 'calc(var(--safe-top) + 14px)' }}>
+      <div className="flex items-center gap-2 px-4 pt-3.5 pb-3">
         <span className="grid size-7 place-items-center rounded-[8px] bg-ink text-[13px] font-bold text-brand-contrast">L</span>
         <span className="text-[15px] font-semibold tracking-tight">Lumen</span>
       </div>
