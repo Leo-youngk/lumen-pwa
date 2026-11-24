@@ -87,7 +87,20 @@
   height: 100vh;
   height: var(--app-height);
   padding: var(--safe-top) var(--safe-right) var(--app-safe-bottom) var(--safe-left);
-  background: var(--aurora-base);
+  /*
+   * One stack for the whole viewport.
+   *
+   * The tint used to live on .app-panel, which starts *below* the safe-area
+   * padding, so the padding band kept the raw aurora and read as a lighter
+   * strip across the status bar. Painting tint and aurora together here means
+   * the padding and the panel resolve to the same colour.
+   */
+  background:
+    linear-gradient(var(--panel-tint), var(--panel-tint)),
+    radial-gradient(65% 45% at 12% -8%, var(--aurora-1), transparent 72%),
+    radial-gradient(55% 42% at 92% 4%, var(--aurora-2), transparent 70%),
+    radial-gradient(80% 48% at 50% 108%, var(--aurora-3), transparent 72%),
+    var(--aurora-base);
   isolation: isolate;
 }
 
@@ -100,29 +113,13 @@
  * picks up a tint where content slides under it. Chroma stays under 0.02 so the
  * page still reads as neutral black-and-white at a glance.
  */
-.app-frame::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(65% 45% at 12% -8%, var(--aurora-1), transparent 72%),
-    radial-gradient(55% 42% at 92% 4%, var(--aurora-2), transparent 70%),
-    radial-gradient(80% 48% at 50% 108%, var(--aurora-3), transparent 72%);
-}
+
 
 .app-panel {
   position: relative;
   height: 100%;
   overflow: hidden;
-  /* Slightly translucent so the aurora tints the column instead of sitting
-     inertly behind an opaque sheet. */
-  /* Same opacity as the glass, so a bar over the panel is the same colour as
-     the panel. Different values here is what made the nav look like a separate
-     strip: 52% glass over 92% panel shows more of the aurora than the panel
-     itself does. */
-  background: color-mix(in srgb, var(--color-content) var(--panel-opacity), transparent);
+  background: transparent;
 }
 
 .app-dialog {
@@ -168,6 +165,8 @@
      edge at 85% plus an inset highlight at 92% — together they give the top
      edge its lit look without a visible border line. */
   --panel-opacity: 52%;
+  /* Panel tint as a standalone colour so it can be stacked under the aurora. */
+  --panel-tint: color-mix(in srgb, var(--color-content) var(--panel-opacity), transparent);
   --glass-opacity: 52%;
   --glass-opacity-strong: 74%;
   --glass-blur: 28px;
@@ -180,9 +179,9 @@
 
   /* Aurora: near-neutral blobs, chroma under 0.02 so the page still reads
      black-and-white but the blur has something to sample. */
-  --aurora-1: oklch(0.972 0.016 250);
-  --aurora-2: oklch(0.976 0.014 70);
-  --aurora-3: oklch(0.968 0.012 190);
+  --aurora-1: oklch(0.972 0.008 250);
+  --aurora-2: oklch(0.976 0.006 70);
+  --aurora-3: oklch(0.968 0.005 190);
   --aurora-base: #ffffff;
 
   --separator: rgb(0 0 0 / 10%);
@@ -239,6 +238,7 @@
   --color-danger: #ff6b6b;
 
   --panel-opacity: 45%;
+  --panel-tint: color-mix(in srgb, var(--color-content) var(--panel-opacity), transparent);
   --glass-opacity: 45%;
   --glass-opacity-strong: 72%;
   --glass-blur: 28px;
@@ -248,9 +248,9 @@
   --glass-shadow: 0 10px 30px rgb(0 0 0 / 45%);
   --glass-shadow-strong: 0 10px 30px rgb(0 0 0 / 62%);
 
-  --aurora-1: oklch(0.245 0.022 250);
-  --aurora-2: oklch(0.238 0.018 70);
-  --aurora-3: oklch(0.232 0.016 190);
+  --aurora-1: oklch(0.245 0.010 250);
+  --aurora-2: oklch(0.238 0.008 70);
+  --aurora-3: oklch(0.232 0.006 190);
   --aurora-base: #212121;
 
   --separator: rgb(255 255 255 / 12%);
@@ -280,6 +280,7 @@
   --color-bubble: #ebebeb;
   --color-sidebar: #f2f2f2;
   --panel-opacity: 74%;
+  --panel-tint: color-mix(in srgb, var(--color-content) var(--panel-opacity), transparent);
   --glass-opacity: 74%;
   --glass-bar: rgb(255 255 255 / 88%);
   --glass-border: rgb(212 212 212 / 70%);
@@ -308,6 +309,7 @@
   --color-bubble: #f1ece1;
   --color-sidebar: #f3eee3;
   --panel-opacity: 74%;
+  --panel-tint: color-mix(in srgb, var(--color-content) var(--panel-opacity), transparent);
   --glass-opacity: 74%;
   --glass-bar: rgb(250 247 240 / 82%);
   --glass-border: rgb(226 219 203 / 70%);
