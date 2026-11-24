@@ -39,6 +39,8 @@ export function App() {
 
   const navigate = useCallback((next: Route) => {
     navigationRevision.current += 1
+    setDrawer(false)
+    setOptions(false)
     if (next === 'home') openConversation(null)
     setRoute(next)
   }, [openConversation])
@@ -160,7 +162,8 @@ export function App() {
       <ModelSheet open={models} onClose={() => setModels(false)} />
       <ScopeSheet open={scope} onClose={() => setScope(false)} />
 
-      <SideDrawer
+      {/* Remove navigation overlays before the Settings page paints. */}
+      {route !== 'settings' ? <SideDrawer
         open={drawer}
         onClose={() => setDrawer(false)}
         conversations={conversations}
@@ -172,9 +175,9 @@ export function App() {
           deleteConversation(id)
           if (id === activeId) navigate('home')
         }}
-      />
+      /> : null}
 
-      <Sheet open={options} title="对话选项" onClose={() => setOptions(false)}>
+      {route !== 'settings' ? <Sheet open={options} title="对话选项" onClose={() => setOptions(false)}>
         <div className="-mx-4">
           <List>
             <Row
@@ -229,7 +232,7 @@ export function App() {
             清空全部对话
           </button>
         </div>
-      </Sheet>
+      </Sheet> : null}
 
       {uploadError ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 z-40 flex justify-center px-4">

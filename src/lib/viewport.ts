@@ -10,6 +10,16 @@ export function useViewport(): void {
     const viewport = window.visualViewport
     if (!viewport) return
 
+    // Safari can allow pinch gestures even when the viewport meta fixes scale.
+    const preventGesture = (event: Event) => event.preventDefault()
+    const preventPinch = (event: TouchEvent) => {
+      if (event.touches.length > 1) event.preventDefault()
+    }
+    document.addEventListener('gesturestart', preventGesture, { passive: false })
+    document.addEventListener('gesturechange', preventGesture, { passive: false })
+    document.addEventListener('touchstart', preventPinch, { passive: false })
+    document.addEventListener('touchmove', preventPinch, { passive: false })
+
     let frame = 0
     let keyboard = false
     let height = 0
@@ -52,6 +62,10 @@ export function useViewport(): void {
     document.addEventListener('focusin', schedule)
     document.addEventListener('focusout', schedule)
     return () => {
+      document.removeEventListener('gesturestart', preventGesture)
+      document.removeEventListener('gesturechange', preventGesture)
+      document.removeEventListener('touchstart', preventPinch)
+      document.removeEventListener('touchmove', preventPinch)
       cancelAnimationFrame(frame)
       viewport.removeEventListener('resize', schedule)
       viewport.removeEventListener('scroll', schedule)

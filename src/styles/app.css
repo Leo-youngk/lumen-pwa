@@ -316,6 +316,8 @@
 
   body {
     margin: 0;
+    /* Keep the body and root canvas aligned when Safari repaints app chrome. */
+    background: var(--color-content);
     color: var(--color-ink);
     font-family: var(--font-sans);
     font-size: 16px;
@@ -328,6 +330,7 @@
   html, body, #root {
     height: 100%;
     overflow: hidden;
+    touch-action: pan-x pan-y;
   }
 
   /* iOS only shows a focus ring for keyboard users, but a web app has to keep
