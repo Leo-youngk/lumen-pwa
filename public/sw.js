@@ -13,7 +13,8 @@
  * The API is never cached: replies and model lists must be live.
  */
 
-const VERSION = 'lumen-shell-v60'
+// Vite replaces this with a hash of the built HTML and its asset references.
+const VERSION = 'lumen-shell-development'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg']
 
 self.addEventListener('install', event => {

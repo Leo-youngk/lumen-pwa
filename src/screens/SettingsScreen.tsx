@@ -127,7 +127,7 @@ export function SettingsScreen({
               <Row icon="sliders" tone="orange" label="恢复默认外观" onClick={resetSettings} />
             </List>
 
-            <p className="px-2 pb-8 text-center text-[12.5px] text-quiet">Lumen · 本地优先的阅读对话工作台</p>
+            <p className="px-2 pb-8 text-center text-[12.5px] text-quiet">Lumen · 版本 {import.meta.env.VITE_APP_VERSION}</p>
           </div>
         </div>
       </div>

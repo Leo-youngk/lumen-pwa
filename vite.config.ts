@@ -1,10 +1,37 @@
 import { fileURLToPath, URL } from 'node:url'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const version = execFileSync('git', ['describe', '--always', '--dirty'], { encoding: 'utf8' }).trim()
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(version),
+  },
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: 'version-service-worker',
+      apply: 'build',
+      async writeBundle(output) {
+        const directory = output.dir ?? 'dist'
+        const html = await readFile(join(directory, 'index.html'), 'utf8')
+        const revision = createHash('sha256').update(html).digest('hex').slice(0, 12)
+        const workerPath = join(directory, 'sw.js')
+        const source = await readFile(workerPath, 'utf8')
+        await writeFile(workerPath, source.replace(
+          /const VERSION = '[^']+'/,
+          `const VERSION = 'lumen-shell-${revision}'`,
+        ))
+      },
+    },
+  ],
   resolve: {
     // Mirrors the `@/*` path mapping in tsconfig.json; Vite does not read
     // `compilerOptions.paths` on its own.

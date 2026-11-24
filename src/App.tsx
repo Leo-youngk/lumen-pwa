@@ -9,7 +9,7 @@ import { SideDrawer } from '@/components/SideDrawer'
 import { List, Row } from '@/components/List'
 import { Icon } from '@/components/Icon'
 import { LumenClient } from '@/lib/api'
-import { isPinned, newId, putBook, sortConversations, type BookRecord } from '@/lib/store'
+import { isPinned, newId, putBook, saveConversations, sortConversations, type BookRecord } from '@/lib/store'
 import { useLumen } from '@/state/LumenContext'
 import { useTheme, useViewport } from '@/lib/viewport'
 import { useServiceWorker } from '@/lib/useServiceWorker'
@@ -35,7 +35,7 @@ export function App() {
 
   useViewport()
   useTheme(settings.theme)
-  useServiceWorker()
+  useServiceWorker(status === 'checking' || streaming || uploading, () => saveConversations(conversations))
 
   const navigate = useCallback((next: Route) => {
     navigationRevision.current += 1
