@@ -46,7 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   compactMode: false,
   enterToSend: true,
   reasoningByModel: {},
-  outputTokenLimit: 130_000,
+  outputTokenLimit: 'auto',
 }
 
 export interface BookRecord {

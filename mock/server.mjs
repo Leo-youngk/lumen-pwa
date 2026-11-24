@@ -23,11 +23,13 @@ const json = (body, status = 200, headers = {}) =>
   })
 
 const MODELS = [
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', family: 'DeepSeek', context_length: 1_000_000 },
-  { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash', family: 'DeepSeek', context_length: 1_000_000 },
-  { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', family: 'Google', context_length: 1_048_576 },
-  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', family: 'Anthropic', context_length: 200_000 },
-  { id: 'kimi-k3', name: 'Kimi K3', family: 'Moonshot', context_length: 262_144 },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', family: 'DeepSeek', type: 'chat', limit: { context: 1_000_000, output: 384_000 }, capabilities: { reasoning: { supported: true, effort: ['high', 'max'] } }, api: { 'chat-completions': {} } },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', family: 'DeepSeek', type: 'chat', limit: { context: 1_000_000, output: 384_000 }, capabilities: { reasoning: { supported: true, effort: ['low', 'high', 'max'] } }, api: { 'chat-completions': {} } },
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon', family: 'Google', type: 'chat', limit: { context: 1_048_576, output: 65_536 }, capabilities: { reasoning: { supported: true, effort: ['low', 'medium', 'high'] } }, api: { interactions: {} } },
+  { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', family: 'Anthropic', type: 'chat', limit: { context: 1_000_000, output: 128_000 }, capabilities: { reasoning: { supported: true, effort: ['low', 'medium', 'high', 'xhigh', 'max'] } }, api: { messages: {} } },
+  { id: 'kimi-k3', name: 'Kimi K3', family: 'Moonshot', type: 'chat', limit: { context: 1_048_576, output: 1_048_576 }, capabilities: { reasoning: { supported: true, effort: ['max'] } }, api: { 'chat-completions': {} } },
+  { id: 'hy3', name: '混元 3', family: '混元', type: 'chat', limit: { context: 256_000, output: 128_000 }, capabilities: { reasoning: { supported: true, effort: ['none', 'low', 'high'] } }, api: { 'chat-completions': {} } },
+  { id: 'text-embedding-3-small', name: 'text-embedding-3-small', family: 'OpenAI', type: 'embedding', limit: { context: 8_192, output: 0 } },
 ]
 
 function cookies(request) {

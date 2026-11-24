@@ -132,7 +132,7 @@ export function App() {
             <Activity mode={route === 'chat' ? 'visible' : 'hidden'}>
               <ChatScreen
                 key={activeId}
-                onBack={() => navigate('home')}
+                onOpenDrawer={() => setDrawer(true)}
                 onOpenOptions={() => setOptions(true)}
                 onOpenModels={() => setModels(true)}
                 onOpenScope={() => setScope(true)}

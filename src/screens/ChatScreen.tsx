@@ -13,7 +13,7 @@ function answerContainer(node: Node | null) {
 }
 
 export interface ChatScreenProps {
-  onBack: () => void
+  onOpenDrawer: () => void
   onOpenOptions: () => void
   onOpenModels: () => void
   onOpenScope: () => void
@@ -22,7 +22,7 @@ export interface ChatScreenProps {
 }
 
 export function ChatScreen({
-  onBack,
+  onOpenDrawer,
   onOpenOptions,
   onOpenModels,
   onOpenScope,
@@ -117,7 +117,7 @@ export function ChatScreen({
     <div className="relative flex h-full min-h-0 flex-col">
       <NavigationBar
         divider={false}
-        onBack={onBack}
+        leading={<IconButton icon="menu" label="打开对话列表" onClick={onOpenDrawer} />}
         title={active.title}
         trailing={<IconButton icon="more" label="更多" onClick={onOpenOptions} />}
       />

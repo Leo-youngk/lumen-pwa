@@ -114,7 +114,11 @@
   overflow: hidden;
   /* Slightly translucent so the aurora tints the column instead of sitting
      inertly behind an opaque sheet. */
-  background: color-mix(in srgb, var(--color-content) 92%, transparent);
+  /* Same opacity as the glass, so a bar over the panel is the same colour as
+     the panel. Different values here is what made the nav look like a separate
+     strip: 52% glass over 92% panel shows more of the aurora than the panel
+     itself does. */
+  background: color-mix(in srgb, var(--color-content) var(--panel-opacity), transparent);
 }
 
 .app-dialog {
@@ -159,6 +163,7 @@
      the bar read as a pane rather than a flat strip. The rim is a 1px white
      edge at 85% plus an inset highlight at 92% — together they give the top
      edge its lit look without a visible border line. */
+  --panel-opacity: 52%;
   --glass-opacity: 52%;
   --glass-opacity-strong: 74%;
   --glass-blur: 28px;
@@ -226,6 +231,7 @@
   --color-sidebar: #171717;
   --color-danger: #ff6b6b;
 
+  --panel-opacity: 45%;
   --glass-opacity: 45%;
   --glass-opacity-strong: 72%;
   --glass-blur: 28px;
@@ -263,6 +269,8 @@
   --color-brand-contrast: #ffffff;
   --color-bubble: #ebebeb;
   --color-sidebar: #f2f2f2;
+  --panel-opacity: 74%;
+  --glass-opacity: 74%;
   --glass-bar: rgb(255 255 255 / 88%);
   --glass-border: rgb(212 212 212 / 70%);
 }
@@ -286,6 +294,8 @@
   --color-brand-contrast: #fffdf9;
   --color-bubble: #f1ece1;
   --color-sidebar: #f3eee3;
+  --panel-opacity: 74%;
+  --glass-opacity: 74%;
   --glass-bar: rgb(250 247 240 / 82%);
   --glass-border: rgb(226 219 203 / 70%);
 }
@@ -374,7 +384,10 @@
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border-color: var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow);
+  /* Inset only. An outer box-shadow is painted *behind* the element, and a
+     52%-transparent shell lets it bleed through — that is what tinted the
+     whole bar grey and produced the visible seam against the transcript. */
+  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 -1px 0 var(--glass-border);
 }
 
 /* The bar with content scrolled underneath: deeper shadow, same pane. */
@@ -404,7 +417,7 @@
   -webkit-backdrop-filter: blur(20px) saturate(var(--glass-saturate));
   backdrop-filter: blur(20px) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 8px 24px -18px rgb(0 0 0 / 22%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
 
 /* A hairline that stays 1 physical pixel on retina instead of blurring. */

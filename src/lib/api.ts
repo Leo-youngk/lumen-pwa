@@ -12,10 +12,13 @@ export interface ModelOption {
   protocol?: ModelProtocol
 }
 
-export type ReasoningOption = 'none' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
+/* Providers name their effort levels differently (heavy, thinking, dynamic…).
+   Keep the known set typed for the labels, but allow any string through so a
+   level we have not seen is still selectable instead of being filtered out. */
+export type ReasoningOption = 'none' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | (string & {})
 type ModelProtocol = 'chat-completions' | 'responses' | 'messages'
 
-export const REASONING_LABELS: Record<ReasoningOption, string> = {
+export const REASONING_LABELS: Record<string, string> = {
   none: '关闭',
   on: '开启',
   minimal: '最低',
@@ -39,6 +42,9 @@ interface RawModel {
   max_output_tokens?: number
   capabilities?: { reasoning?: { supported?: boolean; effort?: unknown; toggle?: boolean } }
   api?: Partial<Record<ModelProtocol, unknown>>
+  recommended_api?: string
+  /** `chat` | `embedding` | … — only chat models belong in the picker. */
+  type?: string
 }
 
 /** A single streamed event from `/api/chat`. */
@@ -90,9 +96,11 @@ function reasoningOptions(model: RawModel, protocol?: ModelProtocol): ReasoningO
   const options = new Set<ReasoningOption>()
   if (reasoning.toggle) options.add('none')
   if (Array.isArray(reasoning.effort)) {
-    const levels = reasoning.effort
-    for (const level of Object.keys(REASONING_LABELS) as ReasoningOption[]) {
-      if (levels.includes(level)) options.add(level)
+    // Keep whatever the provider names its levels. Filtering against our own
+    // label table silently dropped levels we had not enumerated yet, which is
+    // why some models appeared to stop at `high` with no `max`.
+    for (const level of reasoning.effort) {
+      if (typeof level === 'string' && level.trim()) options.add(level.trim())
     }
   }
   if (reasoning.toggle && options.size === 1 && protocol !== 'responses') options.add('on')
@@ -168,7 +176,9 @@ export class LumenClient {
     const data = (await response.json()) as { data?: RawModel[] } | RawModel[]
     const list = Array.isArray(data) ? data : (data.data ?? [])
     return list
-      .filter((item): item is RawModel & { id: string } => Boolean(item?.id))
+      .filter((item): item is RawModel & { id: string } =>
+        Boolean(item?.id) && (item.type ?? 'chat') === 'chat',
+      )
       .map(item => {
         const contextTokens = readContextTokens(item)
         const outputTokens = [item.limit?.output, item.max_output_tokens]

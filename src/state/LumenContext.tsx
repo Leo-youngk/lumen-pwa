@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { LumenClient, type ModelOption } from '@/lib/api'
+import { resolveOutputLimit } from '@/lib/modelLimits'
 import { bookContext, type ReadingProgress } from '../../client/features.js'
 import {
   DEFAULT_SETTINGS,
@@ -350,9 +351,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       const savedEffort = currentSettings.reasoningByModel?.[selectedId]
       const effort = selectedModel?.reasoningOptions.find(option => option === savedEffort)
       const readingEffort = selectedModel?.reasoningOptions.find(option => option === 'none')
-      const requestedOutput = currentSettings.outputTokenLimit === 'max'
-        ? selectedModel?.outputTokens
-        : currentSettings.outputTokenLimit === 'auto' ? undefined : currentSettings.outputTokenLimit
+      const requestedOutput = resolveOutputLimit(selectedModel, currentSettings.outputTokenLimit)
       const requestClient = new LumenClient('', { headers: () => config })
       const controller = new AbortController()
       abortRef.current = controller

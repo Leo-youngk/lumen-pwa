@@ -5,9 +5,8 @@ import { Icon, IconButton } from '@/components/Icon'
 import { useLumen } from '@/state/LumenContext'
 import { getBook } from '@/lib/store'
 import { cn } from '@/lib/cn'
-import { REASONING_LABELS } from '@/lib/api'
-
-const outputPresets = [1024, 4096, 8192, 16384, 32768, 65536, 130000]
+import { REASONING_LABELS, formatCapacity } from '@/lib/api'
+import { limitsUnknown, outputPresetsFor, resolveOutputLimit } from '@/lib/modelLimits'
 
 export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { active, models, model, setModel, modelStatus, refreshModels, settings, updateSettings } = useLumen()
@@ -16,6 +15,20 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
   const selected = models.find(item => item.id === active?.model) ?? models.find(item => item.id === model) ?? models[0]
   const selectedEffort = selected?.reasoningOptions.find(level => level === settings.reasoningByModel?.[selected.id])
   const output = settings.outputTokenLimit === 'max' && !selected?.outputTokens ? 'auto' : settings.outputTokenLimit
+  // Steps follow the model instead of a fixed list: a 200K model should never
+  // be offered 131072, and a 1M model should not stop at 130000.
+  const outputPresets = outputPresetsFor(selected)
+  // The value shown on the auto option must be what auto would actually pick,
+  // not what the current number happens to be.
+  const autoOutput = resolveOutputLimit(selected, 'auto')
+  // A value saved under a different model may not be one of this model's steps;
+  // keep it selectable instead of letting the select fall back to "auto" and
+  // silently change the setting.
+  const outputChoices = useMemo(() => {
+    const current = settings.outputTokenLimit
+    if (typeof current !== 'number' || outputPresets.includes(current)) return outputPresets
+    return [...outputPresets, current].sort((a, b) => a - b)
+  }, [outputPresets, settings.outputTokenLimit])
   const selectClass = 'min-h-10 max-w-[56%] rounded-md bg-field px-2 text-[16px] text-ink'
 
   const visible = useMemo(() => {
@@ -58,9 +71,9 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
                   reasoningByModel: { ...settings.reasoningByModel, [selected.id]: event.target.value },
                 })}
               >
-                <option value="">{selected.reasoningOptions.length ? '模型默认' : '暂无可调档位'}</option>
+                <option value="">{selected.reasoningOptions.length ? '模型默认' : '服务端未提供档位'}</option>
                 {selected.reasoningOptions.map(level => (
-                  <option key={level} value={level}>{REASONING_LABELS[level]}</option>
+                  <option key={level} value={level}>{REASONING_LABELS[level] ?? level}</option>
                 ))}
               </select>
             </label>
@@ -74,16 +87,25 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
                   updateSettings({ outputTokenLimit: value === 'auto' || value === 'max' ? value : Number(value) })
                 }}
               >
-                <option value="auto">自动</option>
-                {outputPresets.map(limit => (
-                  <option key={limit} value={limit}>{`${limit.toLocaleString()} tokens`}</option>
+                <option value="auto">
+                  {autoOutput ? `自动 · ${formatCapacity(autoOutput)}` : '自动'}
+                </option>
+                {outputChoices.map(limit => (
+                  <option key={limit} value={limit}>
+                    {limit >= 1000 ? formatCapacity(limit) : limit} tokens
+                  </option>
                 ))}
                 {selected.outputTokens ? <option value="max">模型上限</option> : null}
               </select>
             </label>
-            <p className="py-2 text-[12px] text-quiet">
-              {selected.outputTokens ? `最高支持 ${selected.outputTokens.toLocaleString()} tokens。` : ''}
-              {active?.book ? '读书问答会预留书籍上下文。' : '上限受剩余上下文约束。'}
+            <p className="py-2 text-[12px] leading-relaxed text-quiet">
+              {limitsUnknown(selected)
+                ? '服务端没有提供这个模型的上下文与输出上限，自动模式按保守值估算。'
+                : [
+                    selected.contextTokens ? `上下文 ${formatCapacity(selected.contextTokens)}` : null,
+                    selected.outputTokens ? `输出上限 ${formatCapacity(selected.outputTokens)}` : null,
+                  ].filter(Boolean).join(' · ')}
+              {active?.book ? ' 读书问答会另留书籍上下文。' : ''}
             </p>
           </div>
         ) : null}

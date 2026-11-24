@@ -11,17 +11,20 @@
  *
  * Run: node tools/build.mjs
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { cp, mkdir, rm, copyFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const root = process.cwd()
 const built = join(root, 'built')
+const isWindows = process.platform === 'win32'
 
 async function main() {
   console.log('→ building frontend')
-  execFileSync('npx', ['vite', 'build'], { stdio: 'inherit', cwd: root })
+  // `npx` and `esbuild` are .cmd shims on Windows; execFileSync cannot launch
+  // those, so shell out instead of hard-coding a POSIX binary name.
+  execSync('npx vite build', { stdio: 'inherit', cwd: root, shell: true })
 
   console.log('→ resetting built/')
   await rm(built, { recursive: true, force: true })
@@ -34,8 +37,9 @@ async function main() {
   if (!existsSync(join(root, 'node_modules/.bin/esbuild'))) {
     throw new Error('esbuild is missing; run `npm install` in the repo that holds worker/.')
   }
+  const esbuild = join(root, 'node_modules/.bin', isWindows ? 'esbuild.cmd' : 'esbuild')
   execFileSync(
-    join(root, 'node_modules/.bin/esbuild'),
+    esbuild,
     [
       'worker/index.mjs',
       '--bundle',
@@ -44,7 +48,7 @@ async function main() {
       '--minify',
       `--outfile=${join(built, 'worker.mjs')}`,
     ],
-    { stdio: 'inherit', cwd: root },
+    { stdio: 'inherit', cwd: root, shell: isWindows },
   )
 
   console.log('✓ built/worker.mjs and built/public/ are ready for wrangler')
